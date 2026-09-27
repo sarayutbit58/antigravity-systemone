@@ -1,0 +1,8 @@
+node_modules/
+.env
+.env.local
+.cache/
+telemetry.json
+*.log
+.DS_Store
+Thumbs.db

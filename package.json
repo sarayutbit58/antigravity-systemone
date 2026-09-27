@@ -1,0 +1,28 @@
+{
+  "name": "agy-smart",
+  "version": "1.0.0",
+  "description": "Smart System 1 skill router for Antigravity CLI powered by TypeSafe Jev model",
+  "main": "index.mjs",
+  "type": "module",
+  "bin": {
+    "agy-smart": "./index.mjs"
+  },
+  "scripts": {
+    "test": "node test.mjs",
+    "start": "node index.mjs",
+    "dashboard": "node dashboard.mjs"
+  },
+  "keywords": [
+    "antigravity",
+    "typesafe",
+    "jev",
+    "system-one",
+    "ai-router"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sarayutbit58/antigravity-systemone.git"
+  },
+  "author": "Sarayut",
+  "license": "MIT"
+}
