@@ -1,8 +1,20 @@
 #!/usr/bin/env node
 import * as fs from "node:fs";
 import * as path from "node:path";
+import * as os from "node:os";
 import { scanSkills, queryJevRouter, loadConfig, loadEnv } from "./index.mjs";
 import { saveTelemetry } from "./dashboard.mjs";
+
+// ponytail: PreInvocation fires on every model invocation (each tool-call cycle),
+// not once per user message. Dedup by checking if the latest telemetry entry
+// already has the same prompt text.
+const TELEMETRY_PATH = path.join(os.homedir(), ".gemini", "antigravity-cli", "telemetry.json");
+function alreadyLogged(prompt) {
+  try {
+    const arr = JSON.parse(fs.readFileSync(TELEMETRY_PATH, "utf8"));
+    return arr[0]?.prompt === prompt;
+  } catch { return false; }
+}
 
 loadEnv();
 
@@ -37,7 +49,7 @@ async function main() {
         } catch { /* skip unparseable line */ }
       }
 
-      if (lastUserPrompt) {
+      if (lastUserPrompt && !alreadyLogged(lastUserPrompt)) {
         const skills = scanSkills();
         const cfg = loadConfig();
         const result = await queryJevRouter(lastUserPrompt, skills, cfg);
