@@ -63,9 +63,11 @@ sequenceDiagram
 ## ✨ Features
 
 * **Zero-Dependency Core:** Pure Node.js ESM built on native platform primitives (`fetch`, `child_process`, `loadEnvFile`).
-* **Multi-Skill Calibration:** Supports 0, 1, or multiple skills per request, sorted by probability and capped at `maxSkills`.
-* **Real-Time Metered Web Dashboard:** Interactive Bootstrap 5 dashboard with live speedometer gauges, token savings meters, and an audit table.
-* **Interactive Live Bench:** Test prompts in the dashboard and observe live Jev probability distributions in real time.
+* **Hybrid Context-Aware Follow-Up Routing:** Follow-up prompts (`"continue"`, `"fix this"`, `"why"`, etc.) automatically inherit topic context from previous conversation turns to prevent dropping specialized skills during multi-turn coding sessions.
+* **Skill Sensitivity Multipliers (`skillWeights`):** Fine-tune routing sensitivity per skill (`0.5x` to `1.5x`) to prioritize preferred frameworks or dampen noisy skills.
+* **Multi-Skill Calibration:** Supports 0, 1, or multiple skills per request, sorted by effective probability and capped at `maxSkills`.
+* **Real-Time Metered Web Dashboard:** Interactive Bootstrap 5 dashboard with live speedometer gauges, token savings meters, latency trend timeline, and an audit table.
+* **Interactive Live Bench & Skills Matrix:** Test prompts in the dashboard with optional prior context, adjust skill sensitivity sliders with instant persistence, and observe live Jev probability distributions in real time.
 * **Native OS Integration:** Includes native wrappers for PowerShell (`.ps1`), CMD (`.cmd`), and Unix/WSL bash.
 
 ---
@@ -149,6 +151,7 @@ Settings can be customized via `~/.gemini/antigravity-cli/agy-smart.config.json`
 | `timeoutMs` | `AGY_SMART_TIMEOUT_MS` | `2000` | Maximum wait time for Jev API before falling back to default |
 | `maxSkills` | `AGY_SMART_MAX_SKILLS` | `5` | Hard cap on the maximum number of skills loaded per prompt |
 | `verbose` | `AGY_SMART_VERBOSE` | `false` | Enable detailed probability bar visualization |
+| `skillWeights` | — | `{}` | Per-skill sensitivity multipliers (e.g. `{"docker-expert": 1.3}`) |
 | `port` | `AGY_DASHBOARD_PORT` | `3737` | Local HTTP port for the web dashboard |
 
 ---
