@@ -26,7 +26,8 @@ server.listen(TEST_PORT, async () => {
     assert.ok(htmlRes.body.includes("Performance & Efficiency Timeline"), "HTML should contain trend chart");
     assert.ok(htmlRes.body.includes("Live Router Settings"), "HTML should contain config modal");
     assert.ok(htmlRes.body.includes("Skills Catalog & Routing Matrix"), "HTML should contain skills catalog");
-    console.log("  ✓ GET / (HTML Dashboard rendered with Timeline, Config, & Catalog)");
+    assert.ok(htmlRes.body.includes("Sensitivity Multiplier"), "HTML should contain sensitivity multiplier slider");
+    console.log("  ✓ GET / (HTML Dashboard rendered with Timeline, Config, Catalog & Sensitivity Sliders)");
 
     // 2. Test GET /api/metrics
     const metricsRes = await get("/api/metrics");
@@ -53,7 +54,7 @@ server.listen(TEST_PORT, async () => {
     const initialConfig = JSON.parse(configGetRes.body);
     assert.ok(typeof initialConfig.threshold === "number");
 
-    const postData = JSON.stringify({ threshold: 0.45, maxSkills: 6 });
+    const postData = JSON.stringify({ threshold: 0.45, maxSkills: 6, skillWeights: { "docker-expert": 1.4 } });
     const postRes = await new Promise((resolve, reject) => {
       const req = http.request(`http://localhost:${TEST_PORT}/api/config`, {
         method: "POST",
@@ -72,7 +73,38 @@ server.listen(TEST_PORT, async () => {
     assert.equal(postResult.success, true);
     assert.equal(postResult.config.threshold, 0.45);
     assert.equal(postResult.config.maxSkills, 6);
-    console.log(`  ✓ GET & POST /api/config (Threshold updated to ${postResult.config.threshold}, MaxSkills: ${postResult.config.maxSkills})`);
+    assert.equal(postResult.config.skillWeights["docker-expert"], 1.4);
+    // Restore initial config
+    await new Promise((resolve) => {
+      const req = http.request(`http://localhost:${TEST_PORT}/api/config`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" }
+      }, (res) => resolve(res));
+      req.write(JSON.stringify(initialConfig));
+      req.end();
+    });
+    console.log(`  ✓ GET & POST /api/config (Threshold: ${postResult.config.threshold}, MaxSkills: ${postResult.config.maxSkills}, SkillWeight: docker-expert=${postResult.config.skillWeights["docker-expert"]}x)`);
+
+    // 5. Test POST /api/test endpoint structure
+    const testPostData = JSON.stringify({ prompt: "continue", prevContext: "build docker container" });
+    const testRes = await new Promise((resolve, reject) => {
+      const req = http.request(`http://localhost:${TEST_PORT}/api/test`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(testPostData) }
+      }, (res) => {
+        let data = "";
+        res.on("data", (c) => (data += c));
+        res.on("end", () => resolve({ status: res.statusCode, body: data }));
+      });
+      req.on("error", reject);
+      req.write(testPostData);
+      req.end();
+    });
+    assert.equal(testRes.status, 200, "/api/test should return 200");
+    const testResult = JSON.parse(testRes.body);
+    assert.ok(Array.isArray(testResult.matchedSkills), "matchedSkills should be array");
+    assert.ok(typeof testResult.latencyMs === "number", "latencyMs should be number");
+    console.log(`  ✓ POST /api/test (Enriched follow-up handled gracefully, Latency: ${testResult.latencyMs}ms)`);
 
     console.log("\n🎉 All Dashboard verification tests passed!");
   } catch (err) {
