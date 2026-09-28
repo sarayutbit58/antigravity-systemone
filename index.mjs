@@ -151,6 +151,12 @@ export function scanSkills(workspaceRoot = process.cwd()) {
           const descM = fm[1].match(/^description:\s*([>|-]?\s*[\s\S]*?)(?=\n[a-zA-Z0-9_-]+:|$)/m);
           const name = nameM ? nameM[1].trim().replace(/^['"]|['"]$/g, "") : entry.name;
           let desc = descM ? descM[1].replace(/^[>|-]\s*/, "").replace(/\r?\n\s*/g, " ").trim() : "";
+          // ponytail: fallback to first markdown paragraph if YAML description is empty or a placeholder
+          if (!desc || /^(one sentence|what this skill does|todo)/i.test(desc)) {
+            const body = content.slice(fm[0].length).trim();
+            const firstPara = body.split(/\r?\n\r?\n/)[0]?.replace(/[#*`_]/g, "").trim();
+            if (firstPara) desc = firstPara;
+          }
           if (desc.length > 200) desc = desc.slice(0, 197) + "...";
           map.set(name, { name, description: desc || "No description.", dirPath: path.join(rootDir, entry.name) });
         } catch { /* skip */ }
