@@ -9,9 +9,13 @@ import { saveTelemetry } from "./dashboard.mjs";
 // not once per user message. Dedup by checking if the latest telemetry entry
 // already has the same prompt text.
 const TELEMETRY_PATH = path.join(os.homedir(), ".gemini", "antigravity-cli", "telemetry.json");
-function alreadyLogged(prompt) {
+function alreadyLogged(prompt, stepIndex) {
   try {
     const arr = JSON.parse(fs.readFileSync(TELEMETRY_PATH, "utf8"));
+    if (!arr.length) return false;
+    if (stepIndex !== undefined && stepIndex >= 0) {
+      return arr.slice(0, 10).some((e) => e.stepIndex === stepIndex);
+    }
     return arr[0]?.prompt === prompt;
   } catch { return false; }
 }
@@ -37,6 +41,7 @@ async function main() {
       // Find the most recent USER_INPUT line and previous prompt for context
       let lastUserPrompt = "";
       let prevUserPrompt = "";
+      let lastStepIndex = -1;
       for (let i = lines.length - 1; i >= 0; i--) {
         try {
           const step = JSON.parse(lines[i]);
@@ -47,6 +52,7 @@ async function main() {
             const text = (m ? m[1] : raw).trim();
             if (!lastUserPrompt) {
               lastUserPrompt = text;
+              lastStepIndex = typeof step.step_index === "number" ? step.step_index : i;
             } else if (!prevUserPrompt && text !== lastUserPrompt) {
               prevUserPrompt = text;
               break;
@@ -55,7 +61,7 @@ async function main() {
         } catch { /* skip unparseable line */ }
       }
 
-      if (lastUserPrompt && !alreadyLogged(lastUserPrompt)) {
+      if (lastUserPrompt && !alreadyLogged(lastUserPrompt, lastStepIndex)) {
         const skills = scanSkills();
         const cfg = loadConfig();
         const result = await queryJevRouter(lastUserPrompt, skills, cfg, undefined, prevUserPrompt);
@@ -64,6 +70,7 @@ async function main() {
         saveTelemetry({
           id: `ide-${Date.now()}`,
           timestamp: Date.now(),
+          stepIndex: lastStepIndex,
           prompt: lastUserPrompt,
           matchedSkills: result.matchedSkills,
           latencyMs: result.latencyMs,
