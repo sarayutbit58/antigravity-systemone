@@ -34,8 +34,9 @@ async function main() {
       const content = fs.readFileSync(transcriptPath, "utf8");
       const lines = content.trim().split("\n");
 
-      // Find the most recent USER_INPUT line
+      // Find the most recent USER_INPUT line and previous prompt for context
       let lastUserPrompt = "";
+      let prevUserPrompt = "";
       for (let i = lines.length - 1; i >= 0; i--) {
         try {
           const step = JSON.parse(lines[i]);
@@ -43,8 +44,13 @@ async function main() {
             const raw = step.content;
             // Extract from <USER_REQUEST> if present
             const m = raw.match(/<USER_REQUEST>([\s\S]*?)<\/USER_REQUEST>/);
-            lastUserPrompt = (m ? m[1] : raw).trim();
-            break;
+            const text = (m ? m[1] : raw).trim();
+            if (!lastUserPrompt) {
+              lastUserPrompt = text;
+            } else if (!prevUserPrompt && text !== lastUserPrompt) {
+              prevUserPrompt = text;
+              break;
+            }
           }
         } catch { /* skip unparseable line */ }
       }
@@ -52,7 +58,7 @@ async function main() {
       if (lastUserPrompt && !alreadyLogged(lastUserPrompt)) {
         const skills = scanSkills();
         const cfg = loadConfig();
-        const result = await queryJevRouter(lastUserPrompt, skills, cfg);
+        const result = await queryJevRouter(lastUserPrompt, skills, cfg, undefined, prevUserPrompt);
 
         const tokensSaved = (skills.length - result.matchedSkills.length) * 60;
         saveTelemetry({
