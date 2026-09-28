@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { exec } from "node:child_process";
-import { scanSkills, queryJevRouter, loadConfig, loadEnv } from "./index.mjs";
+import { scanSkills, queryJevRouter, loadConfig, saveConfig, loadEnv } from "./index.mjs";
 
 loadEnv();
 
@@ -79,6 +79,7 @@ function calculateMetrics(logs, totalSkills = 54) {
       generalModeCount: 0,
       specializedCount: 0,
       recentLogs: [],
+      trendLogs: [],
       skillStats: {}
     };
   }
@@ -116,6 +117,17 @@ function calculateMetrics(logs, totalSkills = 54) {
     generalModeCount: generalCount,
     specializedCount: total - generalCount,
     recentLogs: logs.slice(0, 30),
+    trendLogs: logs.slice(0, 20).reverse().map((l, idx) => ({
+      idx: idx + 1,
+      id: l.id,
+      prompt: l.prompt,
+      latencyMs: l.latencyMs || 0,
+      tokensSaved: l.tokensSaved || 0,
+      matchedSkillsCount: l.matchedSkills?.length || 0,
+      matchedSkills: l.matchedSkills || [],
+      status: l.status || (l.matchedSkills?.length > 0 ? "specialized" : "general_mode"),
+      timestamp: l.timestamp
+    })),
     skillStats: skillCount
   };
 }
@@ -135,11 +147,40 @@ export function createDashboardServer() {
       return;
     }
 
+    if (url.pathname === "/api/config") {
+      if (req.method === "GET") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(loadConfig()));
+        return;
+      }
+      if (req.method === "POST") {
+        let body = "";
+        req.on("data", (chunk) => (body += chunk));
+        req.on("end", () => {
+          try {
+            const updates = JSON.parse(body || "{}");
+            const saved = saveConfig(updates);
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ success: true, config: saved }));
+          } catch (err) {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: err.message }));
+          }
+        });
+        return;
+      }
+    }
+
     if (url.pathname === "/api/metrics") {
       const skills = scanSkills();
       const logs = getTelemetry();
       const metrics = calculateMetrics(logs, skills.length);
       metrics.availableSkillsCount = skills.length;
+      metrics.config = loadConfig();
+      metrics.skills = skills.map((s) => ({
+        ...s,
+        hits: metrics.skillStats[s.name] || 0
+      }));
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(metrics));
       return;
@@ -228,6 +269,7 @@ function renderDashboardHtml() {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Antigravity agy-smart Performance Meter</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap" rel="stylesheet">
   <style>
     :root {
@@ -317,6 +359,43 @@ function renderDashboardHtml() {
       50% { opacity: 0.4; transform: scale(1.2); }
       100% { opacity: 1; transform: scale(1); }
     }
+    .trend-chart-box {
+      position: relative;
+      width: 100%;
+      height: 190px;
+    }
+    .trend-tooltip {
+      position: absolute;
+      display: none;
+      background: rgba(22, 27, 34, 0.95);
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      padding: 8px 12px;
+      font-size: 0.75rem;
+      pointer-events: none;
+      z-index: 10;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.6);
+      max-width: 320px;
+    }
+    .skill-card {
+      transition: transform 0.15s ease, border-color 0.15s ease;
+      background: rgba(255,255,255,0.02);
+      border: 1px solid var(--card-border);
+      border-radius: 10px;
+    }
+    .skill-card:hover {
+      border-color: rgba(88, 166, 255, 0.45) !important;
+      background: rgba(255,255,255,0.04);
+      transform: translateY(-2px);
+    }
+    .pill-stat {
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid var(--card-border);
+      border-radius: 20px;
+      padding: 4px 12px;
+      font-size: 0.8rem;
+    }
+    .x-small { font-size: 0.75rem; }
   </style>
 </head>
 <body class="p-3 p-md-4">
@@ -337,13 +416,84 @@ function renderDashboardHtml() {
           <small class="text-secondary">TypeSafe Jev Model Metered Performance Dashboard</small>
         </div>
       </div>
-      <div class="d-flex align-items-center gap-3 mt-2 mt-sm-0">
-        <span class="d-flex align-items-center gap-2 text-secondary small">
+      <div class="d-flex align-items-center gap-2 mt-2 mt-sm-0">
+        <span class="d-flex align-items-center gap-2 text-secondary small me-2">
           <span class="pulse-dot"></span> Live Telemetry Active
         </span>
+        <button class="btn btn-sm btn-outline-info d-flex align-items-center gap-1" data-bs-toggle="modal" data-bs-target="#configModal">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+          Router Settings
+        </button>
         <button class="btn btn-sm btn-outline-secondary" onclick="fetchMetrics()">Refresh</button>
       </div>
     </header>
+
+    <!-- Modal: Live Configuration Editor -->
+    <div class="modal fade" id="configModal" tabindex="-1" aria-labelledby="configModalLabel" aria-hidden="true">
+      <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content bg-dark border-secondary">
+          <div class="modal-header border-secondary-subtle">
+            <h5 class="modal-title fw-bold d-flex align-items-center gap-2" id="configModalLabel">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+              Live Router Settings
+            </h5>
+            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <p class="small text-secondary mb-3">Tune routing threshold, max skill injection cap, and timeout with immediate effect.</p>
+            
+            <!-- Quick Presets -->
+            <div class="mb-3">
+              <label class="form-label small text-secondary fw-bold text-uppercase">Presets</label>
+              <div class="d-flex gap-2">
+                <button type="button" class="btn btn-sm btn-outline-info" onclick="applyPreset(0.35, 7, 2000)">⚡ Aggressive</button>
+                <button type="button" class="btn btn-sm btn-outline-primary active" onclick="applyPreset(0.50, 5, 2000)">🎯 Balanced</button>
+                <button type="button" class="btn btn-sm btn-outline-warning" onclick="applyPreset(0.65, 3, 2000)">🛡️ Strict</button>
+              </div>
+            </div>
+
+            <!-- Threshold Slider -->
+            <div class="mb-3">
+              <div class="d-flex justify-content-between align-items-center mb-1">
+                <label for="cfgThreshold" class="form-label small text-secondary fw-bold mb-0">PROBABILITY THRESHOLD</label>
+                <span id="cfgThresholdVal" class="badge bg-primary mono">0.50</span>
+              </div>
+              <input type="range" class="form-range" id="cfgThreshold" min="0.10" max="0.90" step="0.05" value="0.50" oninput="document.getElementById('cfgThresholdVal').textContent=Number(this.value).toFixed(2)">
+              <div class="d-flex justify-content-between text-secondary x-small mono">
+                <span>0.10 (More skills matched)</span>
+                <span>0.90 (High precision only)</span>
+              </div>
+            </div>
+
+            <!-- Max Skills -->
+            <div class="mb-3">
+              <label for="cfgMaxSkills" class="form-label small text-secondary fw-bold mb-1">MAX SKILLS CAP</label>
+              <input type="number" class="form-control bg-black border-secondary text-light mono" id="cfgMaxSkills" min="1" max="15" value="5">
+              <small class="text-secondary">Upper bound of specialized skills injected per session.</small>
+            </div>
+
+            <!-- Timeout Ms -->
+            <div class="mb-3">
+              <label for="cfgTimeoutMs" class="form-label small text-secondary fw-bold mb-1">JEV API TIMEOUT (MS)</label>
+              <input type="number" class="form-control bg-black border-secondary text-light mono" id="cfgTimeoutMs" min="300" max="10000" step="100" value="2000">
+              <small class="text-secondary">Timeout limit before graceful fallback.</small>
+            </div>
+
+            <!-- Verbose Toggle -->
+            <div class="form-check form-switch mb-2">
+              <input class="form-check-input" type="checkbox" role="switch" id="cfgVerbose">
+              <label class="form-check-label small" for="cfgVerbose">Verbose CLI Console Output</label>
+            </div>
+
+            <div id="cfgAlertBox" class="alert alert-success py-2 px-3 small mt-3" style="display:none;"></div>
+          </div>
+          <div class="modal-footer border-secondary-subtle">
+            <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Close</button>
+            <button type="button" class="btn btn-sm btn-primary fw-bold" id="btnSaveConfig" onclick="saveDashboardConfig()">Save Changes</button>
+          </div>
+        </div>
+      </div>
+    </div>
 
     <!-- Row 1: Key Performance Gauges / Meters -->
     <div class="row g-3 mb-4">
@@ -444,6 +594,36 @@ function renderDashboardHtml() {
 
     </div>
 
+    <!-- Row 1.5: Performance Trend Chart -->
+    <div class="card mb-4">
+      <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
+        <div class="d-flex align-items-center gap-2">
+          <span>📈 Performance & Efficiency Timeline</span>
+          <span class="badge bg-secondary">Last 20 Runs</span>
+        </div>
+        <div class="d-flex flex-wrap align-items-center gap-2">
+          <span class="pill-stat mono text-success"><small class="text-secondary">Fastest:</small> <span id="trendFastest">-- ms</span></span>
+          <span class="pill-stat mono text-light"><small class="text-secondary">Avg Latency:</small> <span id="trendAvg">-- ms</span></span>
+          <span class="pill-stat mono text-info"><small class="text-secondary">Tokens Saved:</small> <span id="trendTokens">--</span></span>
+        </div>
+      </div>
+      <div class="card-body p-3">
+        <div class="trend-chart-box">
+          <div id="chartTooltip" class="trend-tooltip"></div>
+          <svg id="trendSvg" viewBox="0 0 920 180" class="w-100 h-100">
+            <!-- Gridlines, Bars, Lines rendered by JS -->
+          </svg>
+        </div>
+        <div class="d-flex justify-content-between align-items-center small text-secondary mt-1 px-1">
+          <div class="d-flex gap-3">
+            <span class="d-flex align-items-center gap-1"><span style="width:10px;height:10px;background:#58a6ff;opacity:0.4;display:inline-block;border-radius:2px;"></span> Tokens Saved (bars)</span>
+            <span class="d-flex align-items-center gap-1"><span style="width:10px;height:10px;background:#3fb950;display:inline-block;border-radius:50%;"></span> Latency (line)</span>
+          </div>
+          <span class="mono">Recent Requests (Oldest &rarr; Newest)</span>
+        </div>
+      </div>
+    </div>
+
     <!-- Row 2: Live Prompt Tester & Skills Breakdown -->
     <div class="row g-3 mb-4">
       
@@ -532,28 +712,340 @@ function renderDashboardHtml() {
       </div>
     </div>
 
+    <!-- Row 4: Skills Catalog & Matrix -->
+    <div class="card mb-4" id="skillsCatalogSection">
+      <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
+        <div class="d-flex align-items-center gap-2">
+          <span>🧩 Installed Skills Catalog & Routing Matrix</span>
+          <span id="catalogCountBadge" class="badge bg-primary bg-opacity-25 text-info border border-info border-opacity-25">54 Skills</span>
+        </div>
+        <div class="d-flex gap-2">
+          <div class="btn-group btn-group-sm" role="group">
+            <button type="button" class="btn btn-outline-secondary active" id="btnFilterAll" onclick="setCatalogFilter('all')">All</button>
+            <button type="button" class="btn btn-outline-secondary" id="btnFilterTriggered" onclick="setCatalogFilter('triggered')">Triggered</button>
+            <button type="button" class="btn btn-outline-secondary" id="btnFilterDormant" onclick="setCatalogFilter('dormant')">Dormant</button>
+          </div>
+          <input type="text" id="catalogSearchInput" class="form-control form-control-sm bg-dark border-secondary text-light mono" placeholder="Search skills..." style="width: 220px;" oninput="renderSkillsCatalog()">
+        </div>
+      </div>
+      <div class="card-body p-3">
+        <div id="skillsCatalogGrid" class="row g-3">
+          <div class="text-secondary small text-center py-4">Loading catalog...</div>
+        </div>
+      </div>
+    </div>
+
   </div>
 
   <script>
+    let cachedSkills = [];
+    let cachedMetrics = {};
+    let catalogFilter = 'all';
+
     async function fetchMetrics() {
       try {
         const res = await fetch('/api/metrics');
         const data = await res.json();
+        cachedMetrics = data;
+        cachedSkills = data.skills || [];
         updateDashboard(data);
+        renderTrendChart(data.trendLogs || []);
+        syncConfigForm(data.config);
+        renderSkillsCatalog();
       } catch (err) {
         console.error('Failed to load metrics:', err);
       }
+    }
+
+    function syncConfigForm(cfg) {
+      if (!cfg) return;
+      if (document.getElementById('cfgThreshold')) {
+        document.getElementById('cfgThreshold').value = cfg.threshold;
+        document.getElementById('cfgThresholdVal').textContent = Number(cfg.threshold).toFixed(2);
+      }
+      if (document.getElementById('cfgMaxSkills')) {
+        document.getElementById('cfgMaxSkills').value = cfg.maxSkills;
+      }
+      if (document.getElementById('cfgTimeoutMs')) {
+        document.getElementById('cfgTimeoutMs').value = cfg.timeoutMs;
+      }
+      if (document.getElementById('cfgVerbose')) {
+        document.getElementById('cfgVerbose').checked = Boolean(cfg.verbose);
+      }
+    }
+
+    function applyPreset(threshold, maxSkills, timeoutMs) {
+      document.getElementById('cfgThreshold').value = threshold;
+      document.getElementById('cfgThresholdVal').textContent = Number(threshold).toFixed(2);
+      document.getElementById('cfgMaxSkills').value = maxSkills;
+      document.getElementById('cfgTimeoutMs').value = timeoutMs;
+    }
+
+    async function saveDashboardConfig() {
+      const btn = document.getElementById('btnSaveConfig');
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Saving...';
+      const alertBox = document.getElementById('cfgAlertBox');
+      alertBox.style.display = 'none';
+
+      try {
+        const payload = {
+          threshold: parseFloat(document.getElementById('cfgThreshold').value),
+          maxSkills: parseInt(document.getElementById('cfgMaxSkills').value, 10),
+          timeoutMs: parseInt(document.getElementById('cfgTimeoutMs').value, 10),
+          verbose: document.getElementById('cfgVerbose').checked
+        };
+        const res = await fetch('/api/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (data.success) {
+          alertBox.className = 'alert alert-success py-2 px-3 small mt-3';
+          alertBox.textContent = 'Configuration saved and active for subsequent runs!';
+          alertBox.style.display = 'block';
+          fetchMetrics();
+        } else {
+          throw new Error(data.error || 'Failed to save');
+        }
+      } catch (err) {
+        alertBox.className = 'alert alert-danger py-2 px-3 small mt-3';
+        alertBox.textContent = 'Error: ' + err.message;
+        alertBox.style.display = 'block';
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = 'Save Changes';
+      }
+    }
+
+    function renderTrendChart(trendLogs) {
+      const svg = document.getElementById('trendSvg');
+      const tooltip = document.getElementById('chartTooltip');
+      if (!trendLogs || trendLogs.length === 0) {
+        svg.innerHTML = '<text x="460" y="90" text-anchor="middle" fill="#6e7681" font-size="14">No trend samples recorded yet.</text>';
+        return;
+      }
+
+      // Compute stats
+      const latencies = trendLogs.map(l => l.latencyMs || 0);
+      const fastest = Math.min(...latencies);
+      const avg = Math.round(latencies.reduce((a,b) => a+b, 0) / latencies.length);
+      const totalTokens = trendLogs.reduce((a,b) => a + (b.tokensSaved || 0), 0);
+      document.getElementById('trendFastest').textContent = fastest + ' ms';
+      document.getElementById('trendAvg').textContent = avg + ' ms';
+      document.getElementById('trendTokens').textContent = '+' + totalTokens.toLocaleString();
+
+      const W = 920;
+      const H = 180;
+      const padL = 50;
+      const padR = 40;
+      const padT = 20;
+      const padB = 30;
+      const chartW = W - padL - padR;
+      const chartH = H - padT - padB;
+
+      const maxLat = Math.max(1200, ...latencies, 2000);
+      const maxTok = 3300;
+      const count = trendLogs.length;
+      const stepX = count > 1 ? chartW / (count - 1) : chartW / 2;
+
+      let svgHtml = '';
+
+      // Horizontal Grid lines & Y-axis labels
+      const yTicks = [0.25, 0.5, 0.75, 1];
+      yTicks.forEach(t => {
+        const y = padT + chartH * (1 - t);
+        const latVal = Math.round(maxLat * t);
+        svgHtml += `<line x1="${padL}" y1="${y}" x2="${W - padR}" y2="${y}" stroke="#21262d" stroke-dasharray="3 3"/>`;
+        svgHtml += `<text x="${padL - 8}" y="${y + 4}" fill="#6e7681" font-size="10" text-anchor="end" class="mono">${latVal}ms</text>`;
+      });
+
+      // Bottom baseline
+      svgHtml += `<line x1="${padL}" y1="${H - padB}" x2="${W - padR}" y2="${H - padB}" stroke="#30363d"/>`;
+
+      // Token Saved Bars (Cyan)
+      trendLogs.forEach((l, i) => {
+        const x = count === 1 ? padL + chartW / 2 : padL + i * stepX;
+        const barW = Math.max(8, Math.min(24, (chartW / count) * 0.45));
+        const tokH = Math.min(chartH, ((l.tokensSaved || 0) / maxTok) * chartH);
+        const y = (H - padB) - tokH;
+        svgHtml += `
+          <rect x="${x - barW/2}" y="${y}" width="${barW}" height="${tokH}" fill="#58a6ff" opacity="0.3" rx="2"
+                data-idx="${i}" class="chart-hover-target"/>
+        `;
+      });
+
+      // Latency Line points & path
+      const points = trendLogs.map((l, i) => {
+        const x = count === 1 ? padL + chartW / 2 : padL + i * stepX;
+        const frac = Math.min((l.latencyMs || 0) / maxLat, 1);
+        const y = (H - padB) - frac * chartH;
+        return { x, y, log: l, i };
+      });
+
+      if (points.length > 1) {
+        const pathData = points.map((p, idx) => (idx === 0 ? `M ${p.x} ${p.y}` : `L ${p.x} ${p.y}`)).join(' ');
+        svgHtml += `<path d="${pathData}" fill="none" stroke="#3fb950" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>`;
+      }
+
+      // Latency node dots
+      points.forEach(p => {
+        const color = p.log.latencyMs < 800 ? '#3fb950' : (p.log.latencyMs < 1400 ? '#d29922' : '#f85149');
+        svgHtml += `
+          <circle cx="${p.x}" cy="${p.y}" r="4" fill="${color}" stroke="#161b22" stroke-width="2"
+                  data-idx="${p.i}" class="chart-hover-target" style="cursor:pointer;"/>
+        `;
+      });
+
+      svg.innerHTML = svgHtml;
+
+      // Tooltip hover interactions
+      const box = document.querySelector('.trend-chart-box');
+      svg.querySelectorAll('.chart-hover-target').forEach(el => {
+        el.addEventListener('mouseenter', (e) => {
+          const idx = parseInt(el.getAttribute('data-idx'), 10);
+          const log = trendLogs[idx];
+          if (!log) return;
+          const skillsList = log.matchedSkills && log.matchedSkills.length > 0 
+            ? log.matchedSkills.join(', ') 
+            : 'General Mode (0 skills)';
+          tooltip.innerHTML = `
+            <div class="fw-bold mb-1 text-light text-truncate">${log.prompt || 'Untitled'}</div>
+            <div class="d-flex justify-content-between mb-1 mono">
+              <span class="text-secondary">Latency:</span>
+              <span class="${log.latencyMs < 800 ? 'text-success' : 'text-warning'} fw-bold">${log.latencyMs}ms</span>
+            </div>
+            <div class="d-flex justify-content-between mb-1 mono">
+              <span class="text-secondary">Tokens Saved:</span>
+              <span class="text-info fw-bold">+${(log.tokensSaved || 0).toLocaleString()}</span>
+            </div>
+            <div class="text-secondary x-small mt-1 text-truncate">
+              <span class="text-light">Skills:</span> ${skillsList}
+            </div>
+          `;
+          tooltip.style.display = 'block';
+        });
+
+        el.addEventListener('mousemove', (e) => {
+          const rect = box.getBoundingClientRect();
+          let x = e.clientX - rect.left + 12;
+          let y = e.clientY - rect.top - 20;
+          if (x + 280 > rect.width) x = e.clientX - rect.left - 290;
+          if (y < 0) y = 10;
+          tooltip.style.left = x + 'px';
+          tooltip.style.top = y + 'px';
+        });
+
+        el.addEventListener('mouseleave', () => {
+          tooltip.style.display = 'none';
+        });
+      });
+    }
+
+    function setCatalogFilter(filter) {
+      catalogFilter = filter;
+      document.getElementById('btnFilterAll').className = 'btn btn-outline-secondary ' + (filter === 'all' ? 'active' : '');
+      document.getElementById('btnFilterTriggered').className = 'btn btn-outline-secondary ' + (filter === 'triggered' ? 'active' : '');
+      document.getElementById('btnFilterDormant').className = 'btn btn-outline-secondary ' + (filter === 'dormant' ? 'active' : '');
+      renderSkillsCatalog();
+    }
+
+    function renderSkillsCatalog() {
+      const grid = document.getElementById('skillsCatalogGrid');
+      const search = (document.getElementById('catalogSearchInput')?.value || '').toLowerCase().trim();
+      let list = cachedSkills.slice();
+
+      if (catalogFilter === 'triggered') {
+        list = list.filter(s => (s.hits || 0) > 0);
+      } else if (catalogFilter === 'dormant') {
+        list = list.filter(s => (s.hits || 0) === 0);
+      }
+
+      if (search) {
+        list = list.filter(s => 
+          s.name.toLowerCase().includes(search) || 
+          (s.description && s.description.toLowerCase().includes(search))
+        );
+      }
+
+      // Sort by hits descending, then alphabetically
+      list.sort((a,b) => (b.hits || 0) - (a.hits || 0) || a.name.localeCompare(b.name));
+
+      const totalRequests = cachedMetrics.totalRequests || 1;
+      const countBadge = document.getElementById('catalogCountBadge');
+      if (countBadge) countBadge.textContent = list.length + ' Skills shown';
+
+      if (list.length === 0) {
+        grid.innerHTML = '<div class="text-secondary small text-center py-4">No matching skills found.</div>';
+        return;
+      }
+
+      const samplePrompts = {
+        'postgresql-optimization': 'optimize my slow postgresql query with joins',
+        'react-nextjs-development': 'build a react nextjs 14 dashboard component',
+        'react-best-practices': 'refactor react component for optimal re-renders',
+        'docker-expert': 'write a hardened multi-stage Dockerfile',
+        'kubernetes-deployment': 'deploy helm chart with ingress on k8s',
+        'landing-page-generator': 'generate responsive SaaS landing page in React',
+        'typesafe-ai': 'implement typesafe ai system 1 judgment classifier',
+        'git-workflow-and-versioning': 'resolve git merge conflict cleanly',
+        'github': 'create a github pull request using gh cli',
+        'security-audit': 'run penetration test and security vulnerability scan',
+        'pitch-psychologist': 'review our pitch deck psychology and user framing',
+        'business-analyst': 'build executive KPI dashboard framework',
+        'observability-engineer': 'configure prometheus grafana alerts and logs',
+        'plan-writing': 'break down complex full-stack feature architecture plan'
+      };
+
+      grid.innerHTML = list.map(s => {
+        const hits = s.hits || 0;
+        const rate = totalRequests > 0 ? Math.round((hits / totalRequests) * 100) : 0;
+        const sample = samplePrompts[s.name] || `How do I use ${s.name} effectively?`;
+        const isTriggered = hits > 0;
+        return `
+          <div class="col-12 col-md-6 col-xl-4">
+            <div class="skill-card p-3 h-100 d-flex flex-column justify-content-between">
+              <div>
+                <div class="d-flex justify-content-between align-items-start mb-2">
+                  <span class="mono fw-bold text-info fs-6">${s.name}</span>
+                  <span class="badge ${isTriggered ? 'bg-success bg-opacity-25 text-success border border-success border-opacity-25' : 'bg-secondary bg-opacity-25 text-secondary'} mono">
+                    ${hits} hits (${rate}%)
+                  </span>
+                </div>
+                <p class="small text-secondary mb-3" style="display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;" title="${s.description}">
+                  ${s.description}
+                </p>
+              </div>
+              <div class="pt-2 border-top border-secondary-subtle d-flex justify-content-between align-items-center">
+                <span class="x-small text-secondary mono text-truncate" style="max-width: 140px;">
+                  ${s.dirPath ? s.dirPath.split(/[\\\\/]/).slice(-2).join('/') : ''}
+                </span>
+                <button class="btn btn-sm btn-outline-primary px-2 py-1 x-small fw-bold" onclick="testSkill('${sample}')">
+                  ⚡ Test Prompt
+                </button>
+              </div>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    function testSkill(promptText) {
+      const input = document.getElementById('testPromptInput');
+      input.value = promptText;
+      window.scrollTo({ top: input.offsetTop - 120, behavior: 'smooth' });
+      runLiveTest();
     }
 
     function updateDashboard(data) {
       // 1. Latency Meter
       const lat = data.avgLatencyMs || 0;
       document.getElementById('meterLatencyVal').textContent = lat;
-      // max 2000ms, half circumference is 125.6
       const latFraction = Math.min(lat / 2000, 1);
       const latDash = latFraction * 125.6;
       const gaugeLat = document.getElementById('gaugeLatency');
-      gaugeLat.setAttribute('stroke-dasharray', \`\${latDash} 251.2\`);
+      gaugeLat.setAttribute('stroke-dasharray', `${latDash} 251.2`);
       if (lat < 800) gaugeLat.setAttribute('stroke', '#3fb950');
       else if (lat < 1400) gaugeLat.setAttribute('stroke', '#d29922');
       else gaugeLat.setAttribute('stroke', '#f85149');
@@ -562,7 +1054,7 @@ function renderDashboardHtml() {
       const pct = data.avgTokenSavingsPct || 0;
       document.getElementById('meterTokenPct').textContent = pct;
       const tokenDash = (pct / 100) * 125.6;
-      document.getElementById('gaugeTokens').setAttribute('stroke-dasharray', \`\${tokenDash} 251.2\`);
+      document.getElementById('gaugeTokens').setAttribute('stroke-dasharray', `${tokenDash} 251.2`);
 
       // 3. Totals
       document.getElementById('totalTokensVal').textContent = (data.totalTokensSaved || 0).toLocaleString();
@@ -593,17 +1085,17 @@ function renderDashboardHtml() {
         const maxHits = sortedSkills[0][1] || 1;
         distContainer.innerHTML = sortedSkills.slice(0, 6).map(([name, count]) => {
           const w = Math.round((count / maxHits) * 100);
-          return \`
+          return `
             <div>
               <div class="d-flex justify-content-between small mb-1">
-                <span class="mono fw-bold text-light">\${name}</span>
-                <span class="text-secondary mono">\${count} hits</span>
+                <span class="mono fw-bold text-light">${name}</span>
+                <span class="text-secondary mono">${count} hits</span>
               </div>
               <div class="prob-bar">
-                <div class="prob-fill" style="width: \${w}%;"></div>
+                <div class="prob-fill" style="width: ${w}%;"></div>
               </div>
             </div>
-          \`;
+          `;
         }).join('');
       }
 
@@ -618,19 +1110,19 @@ function renderDashboardHtml() {
           const timeStr = d.toLocaleTimeString();
           let skillsHtml = '';
           if (l.matchedSkills && l.matchedSkills.length > 0) {
-            skillsHtml = l.matchedSkills.map(s => \`<span class="badge badge-skill me-1">\${s}</span>\`).join('');
+            skillsHtml = l.matchedSkills.map(s => `<span class="badge badge-skill me-1 mb-1">${s}</span>`).join('');
           } else {
             skillsHtml = '<span class="badge badge-general">General (0 skills)</span>';
           }
-          return \`
+          return `
             <tr>
-              <td class="mono small text-secondary">\${timeStr}</td>
-              <td class="text-truncate" style="max-width: 320px;" title="\${l.prompt}">\${l.prompt}</td>
-              <td>\${skillsHtml}</td>
-              <td class="mono text-end \${l.latencyMs < 1000 ? 'text-success' : 'text-warning'}">\${l.latencyMs}ms</td>
-              <td class="mono text-end text-info">+\${(l.tokensSaved || 0).toLocaleString()}</td>
+              <td class="mono small text-secondary">${timeStr}</td>
+              <td class="text-truncate" style="max-width: 320px;" title="${l.prompt}">${l.prompt}</td>
+              <td>${skillsHtml}</td>
+              <td class="mono text-end ${l.latencyMs < 1000 ? 'text-success' : 'text-warning'}">${l.latencyMs}ms</td>
+              <td class="mono text-end text-info">+${(l.tokensSaved || 0).toLocaleString()}</td>
             </tr>
-          \`;
+          `;
         }).join('');
       }
     }
@@ -655,44 +1147,41 @@ function renderDashboardHtml() {
         });
         const data = await res.json();
 
-        // Update badges
         const latBadge = document.getElementById('liveLatencyBadge');
         latBadge.textContent = data.latencyMs + ' ms';
         latBadge.className = 'badge mono fs-6 ' + (data.latencyMs < 1000 ? 'bg-success' : 'bg-warning');
 
-        document.getElementById('liveSavingsVal').textContent = \`+\${(data.tokensSaved || 0).toLocaleString()} tokens (\${data.matchedSkills?.length || 0}/\${data.totalSkills || 54} skills loaded)\`;
+        document.getElementById('liveSavingsVal').textContent = `+${(data.tokensSaved || 0).toLocaleString()} tokens (${data.matchedSkills?.length || 0}/${data.totalSkills || 54} skills loaded)`;
 
         const skillsList = document.getElementById('liveSkillsList');
         if (data.matchedSkills && data.matchedSkills.length > 0) {
-          skillsList.innerHTML = data.matchedSkills.map(s => \`<span class="badge badge-skill">\${s}</span>\`).join('');
+          skillsList.innerHTML = data.matchedSkills.map(s => `<span class="badge badge-skill me-1 mb-1">${s}</span>`).join('');
         } else {
           skillsList.innerHTML = '<span class="badge badge-general">General Mode (Zero tokens wasted)</span>';
         }
 
-        // Show top 5 probabilities
         const probList = document.getElementById('liveProbList');
         if (data.probabilities) {
           const sorted = Object.entries(data.probabilities).sort((a,b) => b[1] - a[1]).slice(0, 5);
           probList.innerHTML = sorted.map(([name, p]) => {
             const pct = (p * 100).toFixed(1);
             const isMatch = (data.matchedSkills || []).includes(name);
-            return \`
+            return `
               <div>
                 <div class="d-flex justify-content-between small mb-1">
-                  <span class="mono \${isMatch ? 'text-success fw-bold' : 'text-secondary'}">
-                    \${isMatch ? '✓ ' : ''}\${name}
+                  <span class="mono ${isMatch ? 'text-success fw-bold' : 'text-secondary'}">
+                    ${isMatch ? '✓ ' : ''}${name}
                   </span>
-                  <span class="mono \${isMatch ? 'text-success fw-bold' : 'text-secondary'}">\${pct}%</span>
+                  <span class="mono ${isMatch ? 'text-success fw-bold' : 'text-secondary'}">${pct}%</span>
                 </div>
                 <div class="prob-bar">
-                  <div class="prob-fill" style="width: \${pct}%; background: \${isMatch ? '#3fb950' : '#58a6ff'};"></div>
+                  <div class="prob-fill" style="width: ${pct}%; background: ${isMatch ? '#3fb950' : '#58a6ff'};"></div>
                 </div>
               </div>
-            \`;
+            `;
           }).join('');
         }
 
-        // Refresh global dashboard counters
         fetchMetrics();
       } catch (err) {
         alert('Test failed: ' + err.message);
