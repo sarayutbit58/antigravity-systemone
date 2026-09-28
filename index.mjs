@@ -33,9 +33,10 @@ const DEFAULTS = {
   timeoutMs: 2000,
   maxSkills: 5,
   verbose: false,
+  skillWeights: {},
 };
 
-/** @returns {{ threshold: number, timeoutMs: number, maxSkills: number, verbose: boolean }} */
+/** @returns {{ threshold: number, timeoutMs: number, maxSkills: number, verbose: boolean, skillWeights: Record<string, number> }} */
 export function loadConfig() {
   let file = {};
   if (fs.existsSync(CONFIG_PATH)) {
@@ -48,13 +49,14 @@ export function loadConfig() {
     timeoutMs: num(process.env.AGY_SMART_TIMEOUT_MS) ?? file.timeoutMs ?? DEFAULTS.timeoutMs,
     maxSkills: num(process.env.AGY_SMART_MAX_SKILLS)  ?? file.maxSkills ?? DEFAULTS.maxSkills,
     verbose:   bool(process.env.AGY_SMART_VERBOSE)    ?? file.verbose   ?? DEFAULTS.verbose,
+    skillWeights: typeof file.skillWeights === "object" && file.skillWeights !== null ? file.skillWeights : DEFAULTS.skillWeights,
   };
 }
 
 function num(v)  { return v != null ? Number(v) || undefined : undefined; }
 function bool(v) { return v != null ? v === "true" || v === "1" : undefined; }
 
-/** @param {Partial<{ threshold: number, timeoutMs: number, maxSkills: number, verbose: boolean }>} updates */
+/** @param {Partial<{ threshold: number, timeoutMs: number, maxSkills: number, verbose: boolean, skillWeights: Record<string, number> }>} updates */
 export function saveConfig(updates = {}) {
   let file = {};
   if (fs.existsSync(CONFIG_PATH)) {
@@ -65,10 +67,26 @@ export function saveConfig(updates = {}) {
     timeoutMs: typeof updates.timeoutMs === "number" ? Math.min(Math.max(Math.round(Number(updates.timeoutMs)), 200), 10000) : (file.timeoutMs ?? DEFAULTS.timeoutMs),
     maxSkills: typeof updates.maxSkills === "number" ? Math.min(Math.max(Math.round(Number(updates.maxSkills)), 1), 20) : (file.maxSkills ?? DEFAULTS.maxSkills),
     verbose: typeof updates.verbose === "boolean" ? updates.verbose : (file.verbose ?? DEFAULTS.verbose),
+    skillWeights: typeof updates.skillWeights === "object" && updates.skillWeights !== null
+      ? { ...(file.skillWeights ?? {}), ...updates.skillWeights }
+      : (file.skillWeights ?? {}),
   };
   fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(merged, null, 2), "utf8");
   return merged;
+}
+
+// ponytail: short prompts (< 8 words or conversational triggers) lack domain keywords.
+// Enrich with previous context so Jev router retains relevant skills across follow-ups.
+export function enrichShortPrompt(prompt, prevContext = "") {
+  if (!prompt || !prevContext) return prompt;
+  const trimmed = prompt.trim();
+  const words = trimmed.split(/\s+/);
+  const isContinuation = words.length < 8 || /^(continue|next|more|fix|why|redo|go on|proceed|ok|yes|what else)/i.test(trimmed);
+  if (isContinuation) {
+    return `[Previous Topic: "${prevContext.trim()}"] Current Request: "${trimmed}"`;
+  }
+  return prompt;
 }
 
 // ─── CLI flags ──────────────────────────────────────────────────────────────
@@ -146,16 +164,20 @@ export function scanSkills(workspaceRoot = process.cwd()) {
 /**
  * @param {string} userPrompt
  * @param {SkillInfo[]} skills
- * @param {{ threshold: number, timeoutMs: number, maxSkills: number }} config
+ * @param {{ threshold: number, timeoutMs: number, maxSkills: number, skillWeights?: Record<string, number> }} config
  * @param {string} [apiKey]
+ * @param {string} [prevContext]
  * @returns {Promise<{ matchedSkills: string[], probabilities: Record<string, number>, latencyMs: number, error?: string }>}
  */
-export async function queryJevRouter(userPrompt, skills, config, apiKey = process.env.TYPESAFE_API_KEY || "") {
+export async function queryJevRouter(userPrompt, skills, config, apiKey = process.env.TYPESAFE_API_KEY || "", prevContext = "") {
   const t0 = Date.now();
   const empty = (error) => ({ matchedSkills: [], probabilities: {}, latencyMs: Date.now() - t0, error });
 
   if (!apiKey)                      return empty("TYPESAFE_API_KEY not set");
   if (!skills.length || !userPrompt.trim()) return empty();
+
+  // ponytail: if userPrompt is short, prepend previous topic context for multi-turn coherence
+  const enrichedPrompt = enrichShortPrompt(userPrompt, prevContext);
 
   // ponytail: build one Noul question per skill. Jev runs them in parallel inside a single request.
   const questions = {};
@@ -178,7 +200,7 @@ export async function queryJevRouter(userPrompt, skills, config, apiKey = proces
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       signal: controller.signal,
-      body: JSON.stringify({ state: userPrompt, model: "jev-latest", questions }),
+      body: JSON.stringify({ state: enrichedPrompt, model: "jev-latest", questions }),
     });
     clearTimeout(timer);
     const latencyMs = Date.now() - t0;
@@ -191,11 +213,14 @@ export async function queryJevRouter(userPrompt, skills, config, apiKey = proces
     const data = await res.json();
     const probabilities = {};
     const candidates = [];
+    const weights = config.skillWeights ?? {};
 
     for (const [id, ans] of Object.entries(data?.answers ?? {})) {
-      const p = ans?.noul ?? 0;
-      probabilities[id] = p;
-      if (p >= config.threshold) candidates.push({ name: id, prob: p });
+      const rawP = ans?.noul ?? 0;
+      const weight = typeof weights[id] === "number" ? Math.max(0.1, Math.min(weights[id], 2.0)) : 1.0;
+      const effectiveP = Math.min(Math.round(rawP * weight * 100) / 100, 1.0);
+      probabilities[id] = effectiveP;
+      if (effectiveP >= config.threshold) candidates.push({ name: id, prob: effectiveP });
     }
 
     // Sort by probability descending, then cap at maxSkills
@@ -257,8 +282,20 @@ async function run() {
   if (prompt) {
     const skills = scanSkills();
 
+    // ponytail: extract previous topic from telemetry for conversational follow-ups
+    let prevPrompt = "";
+    try {
+      const telePath = path.join(os.homedir(), ".gemini", "antigravity-cli", "telemetry.json");
+      if (fs.existsSync(telePath)) {
+        const logs = JSON.parse(fs.readFileSync(telePath, "utf8"));
+        if (logs.length > 0 && logs[0].prompt && logs[0].prompt !== prompt) {
+          prevPrompt = logs[0].prompt;
+        }
+      }
+    } catch { /* ignore */ }
+
     // ── Live Jev query on every run ──
-    const result = await queryJevRouter(prompt, skills, cfg);
+    const result = await queryJevRouter(prompt, skills, cfg, undefined, prevPrompt);
 
     // Save telemetry log for dashboard
     try {
