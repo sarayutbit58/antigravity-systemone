@@ -11,6 +11,7 @@ import {
   createSkillsConfig,
   restoreSkillsConfig,
   queryJevRouter,
+  enrichShortPrompt,
 } from "./index.mjs";
 
 console.log("🧪 Running agy-smart verification tests (live-only mode)...\n");
@@ -44,6 +45,7 @@ console.log("🧪 Running agy-smart verification tests (live-only mode)...\n");
   assert.equal(typeof cfg.timeoutMs, "number");
   assert.equal(typeof cfg.maxSkills, "number");
   assert.equal(typeof cfg.verbose, "boolean");
+  assert.equal(typeof cfg.skillWeights, "object");
   assert.ok(cfg.threshold > 0 && cfg.threshold <= 1, "threshold in (0,1]");
   assert.ok(cfg.maxSkills >= 1, "maxSkills >= 1");
   console.log(`  ✓ loadConfig (threshold=${cfg.threshold}, timeout=${cfg.timeoutMs}ms, max=${cfg.maxSkills})`);
@@ -52,12 +54,36 @@ console.log("🧪 Running agy-smart verification tests (live-only mode)...\n");
 // ─── Test 3b: saveConfig ────────────────────────────────────────────────────
 {
   const original = loadConfig();
-  const updated = saveConfig({ threshold: 0.55, maxSkills: 8 });
+  const updated = saveConfig({ threshold: 0.55, maxSkills: 8, skillWeights: { "docker-expert": 1.3 } });
   assert.equal(updated.threshold, 0.55);
   assert.equal(updated.maxSkills, 8);
+  assert.equal(updated.skillWeights["docker-expert"], 1.3);
   // Restore original
   saveConfig(original);
-  console.log("  ✓ saveConfig (threshold & maxSkills update & restore)");
+  console.log("  ✓ saveConfig (threshold, maxSkills, & skillWeights update & restore)");
+}
+
+// ─── Test 3c: enrichShortPrompt (multi-turn context awareness) ─────────────
+{
+  // 1. Long prompt without triggers -> untouched
+  const longPrompt = "Please help me design a multi-tenant database schema using postgresql and prisma";
+  assert.equal(enrichShortPrompt(longPrompt, "earlier discussion"), longPrompt);
+
+  // 2. Short follow-up prompt -> enriched with prior context
+  const shortPrompt = "continue";
+  const enriched = enrichShortPrompt(shortPrompt, "optimize postgresql query with joins");
+  assert.ok(enriched.includes('[Previous Topic: "optimize postgresql query with joins"]'));
+  assert.ok(enriched.includes('Current Request: "continue"'));
+
+  // 3. Conversational trigger ("fix this") -> enriched
+  const fixPrompt = "fix this issue now";
+  const enrichedFix = enrichShortPrompt(fixPrompt, "docker compose service crashed on startup");
+  assert.ok(enrichedFix.includes('[Previous Topic: "docker compose service crashed on startup"]'));
+  assert.ok(enrichedFix.includes('Current Request: "fix this issue now"'));
+
+  // 4. No previous context -> untouched
+  assert.equal(enrichShortPrompt("continue", ""), "continue");
+  console.log("  ✓ enrichShortPrompt (context-aware follow-up prompt enrichment)");
 }
 
 // ─── Test 4: scanSkills ─────────────────────────────────────────────────────
