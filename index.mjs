@@ -54,6 +54,23 @@ export function loadConfig() {
 function num(v)  { return v != null ? Number(v) || undefined : undefined; }
 function bool(v) { return v != null ? v === "true" || v === "1" : undefined; }
 
+/** @param {Partial<{ threshold: number, timeoutMs: number, maxSkills: number, verbose: boolean }>} updates */
+export function saveConfig(updates = {}) {
+  let file = {};
+  if (fs.existsSync(CONFIG_PATH)) {
+    try { file = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8")); } catch { /* ignore */ }
+  }
+  const merged = {
+    threshold: typeof updates.threshold === "number" ? Math.min(Math.max(Number(updates.threshold), 0.05), 0.95) : (file.threshold ?? DEFAULTS.threshold),
+    timeoutMs: typeof updates.timeoutMs === "number" ? Math.min(Math.max(Math.round(Number(updates.timeoutMs)), 200), 10000) : (file.timeoutMs ?? DEFAULTS.timeoutMs),
+    maxSkills: typeof updates.maxSkills === "number" ? Math.min(Math.max(Math.round(Number(updates.maxSkills)), 1), 20) : (file.maxSkills ?? DEFAULTS.maxSkills),
+    verbose: typeof updates.verbose === "boolean" ? updates.verbose : (file.verbose ?? DEFAULTS.verbose),
+  };
+  fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
+  fs.writeFileSync(CONFIG_PATH, JSON.stringify(merged, null, 2), "utf8");
+  return merged;
+}
+
 // ─── CLI flags ──────────────────────────────────────────────────────────────
 /**
  * Parse agy-smart-specific flags out of argv, return the rest for agy.
