@@ -205,7 +205,7 @@ export function createDashboardServer() {
       req.on("data", (chunk) => (body += chunk));
       req.on("end", async () => {
         try {
-          const { prompt } = JSON.parse(body || "{}");
+          const { prompt, prevContext } = JSON.parse(body || "{}");
           if (!prompt || !prompt.trim()) {
             res.writeHead(400, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ error: "Prompt is required" }));
@@ -214,7 +214,7 @@ export function createDashboardServer() {
 
           const skills = scanSkills();
           const cfg = loadConfig();
-          const result = await queryJevRouter(prompt, skills, cfg);
+          const result = await queryJevRouter(prompt, skills, cfg, undefined, prevContext);
 
           const tokensSaved = (skills.length - result.matchedSkills.length) * 60;
           const entry = {
@@ -636,11 +636,18 @@ function renderDashboardHtml() {
           </div>
           <div class="card-body">
             <p class="small text-secondary mb-2">Type any prompt to observe live latency, Noul probabilities, and skill filtration in real time:</p>
-            <div class="input-group mb-3">
-              <input type="text" id="testPromptInput" class="form-control mono bg-dark border-secondary text-light" placeholder="e.g. Build a React Dashboard landing page or optimize postgresql query" value="optimize postgresql query with joins">
-              <button class="btn btn-primary fw-bold px-4" id="btnTestPrompt" onclick="runLiveTest()">
-                Meter Query
-              </button>
+            <div class="row g-2 mb-3">
+              <div class="col-12 col-md-8">
+                <input type="text" id="testPromptInput" class="form-control mono bg-dark border-secondary text-light" placeholder="e.g. continue or optimize postgresql query" value="optimize postgresql query with joins">
+              </div>
+              <div class="col-12 col-md-4">
+                <div class="input-group">
+                  <input type="text" id="testContextInput" class="form-control mono bg-dark border-secondary text-light" placeholder="Prior context (optional)">
+                  <button class="btn btn-primary fw-bold px-3" id="btnTestPrompt" onclick="runLiveTest()">
+                    Meter Query
+                  </button>
+                </div>
+              </div>
             </div>
 
             <!-- Live Result Display -->
@@ -857,12 +864,12 @@ function renderDashboardHtml() {
       yTicks.forEach(t => {
         const y = padT + chartH * (1 - t);
         const latVal = Math.round(maxLat * t);
-        svgHtml += `<line x1="${padL}" y1="${y}" x2="${W - padR}" y2="${y}" stroke="#21262d" stroke-dasharray="3 3"/>`;
-        svgHtml += `<text x="${padL - 8}" y="${y + 4}" fill="#6e7681" font-size="10" text-anchor="end" class="mono">${latVal}ms</text>`;
+        svgHtml += \`<line x1="\${padL}" y1="\${y}" x2="\${W - padR}" y2="\${y}" stroke="#21262d" stroke-dasharray="3 3"/>\`;
+        svgHtml += \`<text x="\${padL - 8}" y="\${y + 4}" fill="#6e7681" font-size="10" text-anchor="end" class="mono">\${latVal}ms</text>\`;
       });
 
       // Bottom baseline
-      svgHtml += `<line x1="${padL}" y1="${H - padB}" x2="${W - padR}" y2="${H - padB}" stroke="#30363d"/>`;
+      svgHtml += \`<line x1="\${padL}" y1="\${H - padB}" x2="\${W - padR}" y2="\${H - padB}" stroke="#30363d"/>\`;
 
       // Token Saved Bars (Cyan)
       trendLogs.forEach((l, i) => {
@@ -870,10 +877,10 @@ function renderDashboardHtml() {
         const barW = Math.max(8, Math.min(24, (chartW / count) * 0.45));
         const tokH = Math.min(chartH, ((l.tokensSaved || 0) / maxTok) * chartH);
         const y = (H - padB) - tokH;
-        svgHtml += `
-          <rect x="${x - barW/2}" y="${y}" width="${barW}" height="${tokH}" fill="#58a6ff" opacity="0.3" rx="2"
-                data-idx="${i}" class="chart-hover-target"/>
-        `;
+        svgHtml += \`
+          <rect x="\${x - barW/2}" y="\${y}" width="\${barW}" height="\${tokH}" fill="#58a6ff" opacity="0.3" rx="2"
+                data-idx="\${i}" class="chart-hover-target"/>
+        \`;
       });
 
       // Latency Line points & path
@@ -885,17 +892,17 @@ function renderDashboardHtml() {
       });
 
       if (points.length > 1) {
-        const pathData = points.map((p, idx) => (idx === 0 ? `M ${p.x} ${p.y}` : `L ${p.x} ${p.y}`)).join(' ');
-        svgHtml += `<path d="${pathData}" fill="none" stroke="#3fb950" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>`;
+        const pathData = points.map((p, idx) => (idx === 0 ? \`M \${p.x} \${p.y}\` : \`L \${p.x} \${p.y}\`)).join(' ');
+        svgHtml += \`<path d="\${pathData}" fill="none" stroke="#3fb950" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>\`;
       }
 
       // Latency node dots
       points.forEach(p => {
         const color = p.log.latencyMs < 800 ? '#3fb950' : (p.log.latencyMs < 1400 ? '#d29922' : '#f85149');
-        svgHtml += `
-          <circle cx="${p.x}" cy="${p.y}" r="4" fill="${color}" stroke="#161b22" stroke-width="2"
-                  data-idx="${p.i}" class="chart-hover-target" style="cursor:pointer;"/>
-        `;
+        svgHtml += \`
+          <circle cx="\${p.x}" cy="\${p.y}" r="4" fill="\${color}" stroke="#161b22" stroke-width="2"
+                  data-idx="\${p.i}" class="chart-hover-target" style="cursor:pointer;"/>
+        \`;
       });
 
       svg.innerHTML = svgHtml;
@@ -910,20 +917,20 @@ function renderDashboardHtml() {
           const skillsList = log.matchedSkills && log.matchedSkills.length > 0 
             ? log.matchedSkills.join(', ') 
             : 'General Mode (0 skills)';
-          tooltip.innerHTML = `
-            <div class="fw-bold mb-1 text-light text-truncate">${log.prompt || 'Untitled'}</div>
+          tooltip.innerHTML = \`
+            <div class="fw-bold mb-1 text-light text-truncate">\${log.prompt || 'Untitled'}</div>
             <div class="d-flex justify-content-between mb-1 mono">
               <span class="text-secondary">Latency:</span>
-              <span class="${log.latencyMs < 800 ? 'text-success' : 'text-warning'} fw-bold">${log.latencyMs}ms</span>
+              <span class="\${log.latencyMs < 800 ? 'text-success' : 'text-warning'} fw-bold">\${log.latencyMs}ms</span>
             </div>
             <div class="d-flex justify-content-between mb-1 mono">
               <span class="text-secondary">Tokens Saved:</span>
-              <span class="text-info fw-bold">+${(log.tokensSaved || 0).toLocaleString()}</span>
+              <span class="text-info fw-bold">+\${(log.tokensSaved || 0).toLocaleString()}</span>
             </div>
             <div class="text-secondary x-small mt-1 text-truncate">
-              <span class="text-light">Skills:</span> ${skillsList}
+              <span class="text-light">Skills:</span> \${skillsList}
             </div>
-          `;
+          \`;
           tooltip.style.display = 'block';
         });
 
@@ -1001,34 +1008,75 @@ function renderDashboardHtml() {
       grid.innerHTML = list.map(s => {
         const hits = s.hits || 0;
         const rate = totalRequests > 0 ? Math.round((hits / totalRequests) * 100) : 0;
-        const sample = samplePrompts[s.name] || `How do I use ${s.name} effectively?`;
+        const sample = samplePrompts[s.name] || \`How do I use \${s.name} effectively?\`;
         const isTriggered = hits > 0;
-        return `
+        const weights = (cachedMetrics.config && cachedMetrics.config.skillWeights) || {};
+        const currentWeight = typeof weights[s.name] === 'number' ? weights[s.name] : 1.0;
+        const weightBadgeClass = currentWeight > 1.0 ? 'bg-primary' : currentWeight < 1.0 ? 'bg-warning text-dark' : 'bg-secondary';
+        return \`
           <div class="col-12 col-md-6 col-xl-4">
             <div class="skill-card p-3 h-100 d-flex flex-column justify-content-between">
               <div>
                 <div class="d-flex justify-content-between align-items-start mb-2">
-                  <span class="mono fw-bold text-info fs-6">${s.name}</span>
-                  <span class="badge ${isTriggered ? 'bg-success bg-opacity-25 text-success border border-success border-opacity-25' : 'bg-secondary bg-opacity-25 text-secondary'} mono">
-                    ${hits} hits (${rate}%)
+                  <span class="mono fw-bold text-info fs-6">\${s.name}</span>
+                  <span class="badge \${isTriggered ? 'bg-success bg-opacity-25 text-success border border-success border-opacity-25' : 'bg-secondary bg-opacity-25 text-secondary'} mono">
+                    \${hits} hits (\${rate}%)
                   </span>
                 </div>
-                <p class="small text-secondary mb-3" style="display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;" title="${s.description}">
-                  ${s.description}
+                <p class="small text-secondary mb-2" style="display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;" title="\${s.description}">
+                  \${s.description}
                 </p>
+                <div class="my-2 p-2 rounded bg-black bg-opacity-25 border border-secondary-subtle">
+                  <div class="d-flex justify-content-between align-items-center mb-1">
+                    <span class="x-small text-secondary text-uppercase fw-bold">Sensitivity Multiplier</span>
+                    <span id="weightBadge_\${s.name}" class="badge \${weightBadgeClass} mono x-small">
+                      \${currentWeight.toFixed(1)}x
+                    </span>
+                  </div>
+                  <input type="range" class="form-range" min="0.5" max="1.5" step="0.1" value="\${currentWeight}"
+                    oninput="onSkillWeightInput('\${s.name}', this.value)"
+                    onchange="updateSkillWeight('\${s.name}', this.value)">
+                </div>
               </div>
               <div class="pt-2 border-top border-secondary-subtle d-flex justify-content-between align-items-center">
                 <span class="x-small text-secondary mono text-truncate" style="max-width: 140px;">
-                  ${s.dirPath ? s.dirPath.split(/[\\\\/]/).slice(-2).join('/') : ''}
+                  \${s.dirPath ? s.dirPath.split(/[\\\\/]/).slice(-2).join('/') : ''}
                 </span>
-                <button class="btn btn-sm btn-outline-primary px-2 py-1 x-small fw-bold" onclick="testSkill('${sample}')">
+                <button class="btn btn-sm btn-outline-primary px-2 py-1 x-small fw-bold" onclick="testSkill('\${sample}')">
                   ⚡ Test Prompt
                 </button>
               </div>
             </div>
           </div>
-        `;
+        \`;
       }).join('');
+    }
+
+    function onSkillWeightInput(name, val) {
+      const badge = document.getElementById('weightBadge_' + name);
+      const n = parseFloat(val);
+      if (badge) {
+        badge.textContent = n.toFixed(1) + 'x';
+        badge.className = 'badge mono x-small ' + (n > 1.0 ? 'bg-primary' : n < 1.0 ? 'bg-warning text-dark' : 'bg-secondary');
+      }
+    }
+
+    async function updateSkillWeight(name, val) {
+      const n = parseFloat(val);
+      try {
+        const res = await fetch('/api/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ skillWeights: { [name]: n } })
+        });
+        const data = await res.json();
+        if (data.success && data.config) {
+          if (!cachedMetrics.config) cachedMetrics.config = {};
+          cachedMetrics.config.skillWeights = data.config.skillWeights;
+        }
+      } catch (err) {
+        console.error('Failed to update skill weight:', err);
+      }
     }
 
     function testSkill(promptText) {
@@ -1045,7 +1093,7 @@ function renderDashboardHtml() {
       const latFraction = Math.min(lat / 2000, 1);
       const latDash = latFraction * 125.6;
       const gaugeLat = document.getElementById('gaugeLatency');
-      gaugeLat.setAttribute('stroke-dasharray', `${latDash} 251.2`);
+      gaugeLat.setAttribute('stroke-dasharray', \`\${latDash} 251.2\`);
       if (lat < 800) gaugeLat.setAttribute('stroke', '#3fb950');
       else if (lat < 1400) gaugeLat.setAttribute('stroke', '#d29922');
       else gaugeLat.setAttribute('stroke', '#f85149');
@@ -1054,7 +1102,7 @@ function renderDashboardHtml() {
       const pct = data.avgTokenSavingsPct || 0;
       document.getElementById('meterTokenPct').textContent = pct;
       const tokenDash = (pct / 100) * 125.6;
-      document.getElementById('gaugeTokens').setAttribute('stroke-dasharray', `${tokenDash} 251.2`);
+      document.getElementById('gaugeTokens').setAttribute('stroke-dasharray', \`\${tokenDash} 251.2\`);
 
       // 3. Totals
       document.getElementById('totalTokensVal').textContent = (data.totalTokensSaved || 0).toLocaleString();
@@ -1085,17 +1133,17 @@ function renderDashboardHtml() {
         const maxHits = sortedSkills[0][1] || 1;
         distContainer.innerHTML = sortedSkills.slice(0, 6).map(([name, count]) => {
           const w = Math.round((count / maxHits) * 100);
-          return `
+          return \`
             <div>
               <div class="d-flex justify-content-between small mb-1">
-                <span class="mono fw-bold text-light">${name}</span>
-                <span class="text-secondary mono">${count} hits</span>
+                <span class="mono fw-bold text-light">\${name}</span>
+                <span class="text-secondary mono">\${count} hits</span>
               </div>
               <div class="prob-bar">
-                <div class="prob-fill" style="width: ${w}%;"></div>
+                <div class="prob-fill" style="width: \${w}%;"></div>
               </div>
             </div>
-          `;
+          \`;
         }).join('');
       }
 
@@ -1110,19 +1158,19 @@ function renderDashboardHtml() {
           const timeStr = d.toLocaleTimeString();
           let skillsHtml = '';
           if (l.matchedSkills && l.matchedSkills.length > 0) {
-            skillsHtml = l.matchedSkills.map(s => `<span class="badge badge-skill me-1 mb-1">${s}</span>`).join('');
+            skillsHtml = l.matchedSkills.map(s => \`<span class="badge badge-skill me-1 mb-1">\${s}</span>\`).join('');
           } else {
             skillsHtml = '<span class="badge badge-general">General (0 skills)</span>';
           }
-          return `
+          return \`
             <tr>
-              <td class="mono small text-secondary">${timeStr}</td>
-              <td class="text-truncate" style="max-width: 320px;" title="${l.prompt}">${l.prompt}</td>
-              <td>${skillsHtml}</td>
-              <td class="mono text-end ${l.latencyMs < 1000 ? 'text-success' : 'text-warning'}">${l.latencyMs}ms</td>
-              <td class="mono text-end text-info">+${(l.tokensSaved || 0).toLocaleString()}</td>
+              <td class="mono small text-secondary">\${timeStr}</td>
+              <td class="text-truncate" style="max-width: 320px;" title="\${l.prompt}">\${l.prompt}</td>
+              <td>\${skillsHtml}</td>
+              <td class="mono text-end \${l.latencyMs < 1000 ? 'text-success' : 'text-warning'}">\${l.latencyMs}ms</td>
+              <td class="mono text-end text-info">+\${(l.tokensSaved || 0).toLocaleString()}</td>
             </tr>
-          `;
+          \`;
         }).join('');
       }
     }
@@ -1130,6 +1178,7 @@ function renderDashboardHtml() {
     async function runLiveTest() {
       const input = document.getElementById('testPromptInput');
       const prompt = input.value.trim();
+      const prevContext = document.getElementById('testContextInput')?.value.trim() || '';
       if (!prompt) return;
 
       const btn = document.getElementById('btnTestPrompt');
@@ -1143,7 +1192,7 @@ function renderDashboardHtml() {
         const res = await fetch('/api/test', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt })
+          body: JSON.stringify({ prompt, prevContext })
         });
         const data = await res.json();
 
@@ -1151,11 +1200,11 @@ function renderDashboardHtml() {
         latBadge.textContent = data.latencyMs + ' ms';
         latBadge.className = 'badge mono fs-6 ' + (data.latencyMs < 1000 ? 'bg-success' : 'bg-warning');
 
-        document.getElementById('liveSavingsVal').textContent = `+${(data.tokensSaved || 0).toLocaleString()} tokens (${data.matchedSkills?.length || 0}/${data.totalSkills || 54} skills loaded)`;
+        document.getElementById('liveSavingsVal').textContent = \`+\${(data.tokensSaved || 0).toLocaleString()} tokens (\${data.matchedSkills?.length || 0}/\${data.totalSkills || 54} skills loaded)\`;
 
         const skillsList = document.getElementById('liveSkillsList');
         if (data.matchedSkills && data.matchedSkills.length > 0) {
-          skillsList.innerHTML = data.matchedSkills.map(s => `<span class="badge badge-skill me-1 mb-1">${s}</span>`).join('');
+          skillsList.innerHTML = data.matchedSkills.map(s => \`<span class="badge badge-skill me-1 mb-1">\${s}</span>\`).join('');
         } else {
           skillsList.innerHTML = '<span class="badge badge-general">General Mode (Zero tokens wasted)</span>';
         }
@@ -1166,19 +1215,19 @@ function renderDashboardHtml() {
           probList.innerHTML = sorted.map(([name, p]) => {
             const pct = (p * 100).toFixed(1);
             const isMatch = (data.matchedSkills || []).includes(name);
-            return `
+            return \`
               <div>
                 <div class="d-flex justify-content-between small mb-1">
-                  <span class="mono ${isMatch ? 'text-success fw-bold' : 'text-secondary'}">
-                    ${isMatch ? '✓ ' : ''}${name}
+                  <span class="mono \${isMatch ? 'text-success fw-bold' : 'text-secondary'}">
+                    \${isMatch ? '✓ ' : ''}\${name}
                   </span>
-                  <span class="mono ${isMatch ? 'text-success fw-bold' : 'text-secondary'}">${pct}%</span>
+                  <span class="mono \${isMatch ? 'text-success fw-bold' : 'text-secondary'}">\${pct}%</span>
                 </div>
                 <div class="prob-bar">
-                  <div class="prob-fill" style="width: ${pct}%; background: ${isMatch ? '#3fb950' : '#58a6ff'};"></div>
+                  <div class="prob-fill" style="width: \${pct}%; background: \${isMatch ? '#3fb950' : '#58a6ff'};"></div>
                 </div>
               </div>
-            `;
+            \`;
           }).join('');
         }
 
