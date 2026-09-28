@@ -6,6 +6,7 @@ import {
   extractUserPrompt,
   parseFlags,
   loadConfig,
+  saveConfig,
   scanSkills,
   createSkillsConfig,
   restoreSkillsConfig,
@@ -46,6 +47,17 @@ console.log("🧪 Running agy-smart verification tests (live-only mode)...\n");
   assert.ok(cfg.threshold > 0 && cfg.threshold <= 1, "threshold in (0,1]");
   assert.ok(cfg.maxSkills >= 1, "maxSkills >= 1");
   console.log(`  ✓ loadConfig (threshold=${cfg.threshold}, timeout=${cfg.timeoutMs}ms, max=${cfg.maxSkills})`);
+}
+
+// ─── Test 3b: saveConfig ────────────────────────────────────────────────────
+{
+  const original = loadConfig();
+  const updated = saveConfig({ threshold: 0.55, maxSkills: 8 });
+  assert.equal(updated.threshold, 0.55);
+  assert.equal(updated.maxSkills, 8);
+  // Restore original
+  saveConfig(original);
+  console.log("  ✓ saveConfig (threshold & maxSkills update & restore)");
 }
 
 // ─── Test 4: scanSkills ─────────────────────────────────────────────────────
