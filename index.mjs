@@ -139,11 +139,11 @@ export function stripSlashCommands(prompt) {
 }
 
 /**
- * Extract the user prompt text from agy CLI arguments.
+ * Extract raw prompt text from agy CLI arguments without stripping commands.
  * @param {string[]} args
  * @returns {string}
  */
-export function extractUserPrompt(args) {
+export function extractRawUserPrompt(args) {
   let prompt = "";
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
@@ -162,7 +162,41 @@ export function extractUserPrompt(args) {
   if (!prompt) {
     prompt = args.filter((a) => !a.startsWith("-")).join(" ").trim();
   }
-  return stripSlashCommands(prompt);
+  return prompt;
+}
+
+/**
+ * Extract the user prompt text from agy CLI arguments.
+ * @param {string[]} args
+ * @returns {string}
+ */
+export function extractUserPrompt(args) {
+  return stripSlashCommands(extractRawUserPrompt(args));
+}
+
+/**
+ * Detect model name chosen by the user from prompt or CLI arguments.
+ * @param {string[]} [args=[]]
+ * @param {string} [rawPrompt=""]
+ * @returns {string}
+ */
+export function extractModel(args = [], rawPrompt = "") {
+  // 1. Check prompt for /model <name> or /mode <name> or /m <name>
+  const slashMatch = (rawPrompt || "").match(/^\/(?:model|mode|m)\s+([^\s]+)/i);
+  if (slashMatch) return slashMatch[1].toLowerCase();
+
+  // 2. Check agy args for --model <name> or -m <name> or --model=<name>
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a.startsWith("--model=")) return a.slice(8).trim().toLowerCase();
+    if (a === "--model" || a === "-m") {
+      if (i + 1 < args.length && !args[i + 1].startsWith("-")) {
+        return args[i + 1].trim().toLowerCase();
+      }
+    }
+  }
+
+  return "gemini-2.5-pro";
 }
 
 /**
@@ -432,7 +466,9 @@ async function run() {
 
   const cfg = loadConfig();
   const isVerbose = flagVerbose || cfg.verbose;
+  const rawPrompt = extractRawUserPrompt(agyArgs);
   const prompt = extractUserPrompt(agyArgs);
+  const detectedModel = extractModel(agyArgs, rawPrompt);
   let effectiveAgyArgs = [...agyArgs];
 
   let cleanupHook = null;
@@ -468,6 +504,7 @@ async function run() {
         id: `cli-${Date.now()}`,
         timestamp: Date.now(),
         prompt,
+        model: detectedModel,
         effort: effortResult.effort,
         effortScore: effortResult.score,
         effortConfidence: effortResult.confidence,
