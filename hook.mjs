@@ -39,14 +39,24 @@ async function main() {
       const content = fs.readFileSync(transcriptPath, "utf8");
       const lines = content.trim().split("\n");
 
-      // Find the most recent USER_INPUT line and previous prompt for context
+      // Find the most recent USER_INPUT line, previous prompt, and any model changes
       let lastUserPrompt = "";
       let lastRawPrompt = "";
       let prevUserPrompt = "";
       let lastStepIndex = -1;
+      let transcriptModel = "";
+
       for (let i = lines.length - 1; i >= 0; i--) {
         try {
           const step = JSON.parse(lines[i]);
+          // Check for settings changes (e.g. <USER_SETTINGS_CHANGE> Model Selection ... </USER_SETTINGS_CHANGE>)
+          if (!transcriptModel && step.content) {
+            const setMatch = step.content.match(/The user changed setting `Model Selection`.*?to\s+([^.\n]+)/i);
+            if (setMatch) {
+              transcriptModel = setMatch[1].trim();
+            }
+          }
+
           if (step.type === "USER_INPUT" && step.content) {
             const raw = step.content;
             // Extract from <USER_REQUEST> if present
@@ -59,7 +69,7 @@ async function main() {
               lastStepIndex = typeof step.step_index === "number" ? step.step_index : i;
             } else if (!prevUserPrompt && text !== lastUserPrompt) {
               prevUserPrompt = text;
-              break;
+              if (transcriptModel) break;
             }
           }
         } catch { /* skip unparseable line */ }
@@ -74,7 +84,8 @@ async function main() {
         ]);
 
         const tokensSaved = (skills.length - result.matchedSkills.length) * 60;
-        const detectedModel = extractModel([], lastRawPrompt) || data.modelName || "gemini-3-8-flash";
+        const promptModel = extractModel([], lastRawPrompt);
+        const detectedModel = (promptModel !== "gemini-3-8-flash" ? promptModel : "") || transcriptModel || data.modelName || "gemini-3-8-flash";
         saveTelemetry({
           id: `ide-${Date.now()}`,
           timestamp: Date.now(),
