@@ -125,34 +125,66 @@ export function parseFlags(argv) {
 }
 
 /**
+ * Strip model-switching slash commands like `/model <name>` from prompt text
+ * so TypeSafe Jev evaluates the actual coding task rather than model selection syntax.
+ * @param {string} prompt
+ * @returns {string}
+ */
+export function stripSlashCommands(prompt) {
+  if (!prompt) return "";
+  const trimmed = prompt.trim();
+  // Strip /model <name> or /mode <name> or similar leading slash commands
+  const cleaned = trimmed.replace(/^\/(?:model|mode|m)\s+[^\s]+\s+/i, "");
+  return cleaned.trim() || trimmed;
+}
+
+/**
  * Extract the user prompt text from agy CLI arguments.
  * @param {string[]} args
  * @returns {string}
  */
 export function extractUserPrompt(args) {
+  let prompt = "";
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     // ponytail: support -p="value" or --prompt="value" syntax
     if (a.startsWith("-p=") || a.startsWith("--print=") || a.startsWith("-i=") || a.startsWith("--prompt=") || a.startsWith("--prompt-interactive=")) {
-      return a.slice(a.indexOf("=") + 1).replace(/^['"]|['"]$/g, "").trim();
+      prompt = a.slice(a.indexOf("=") + 1).replace(/^['"]|['"]$/g, "").trim();
+      break;
     }
     if (["-p", "--print", "-i", "--prompt-interactive", "--prompt"].includes(a)) {
-      if (i + 1 < args.length && !args[i + 1].startsWith("-")) return args[i + 1];
+      if (i + 1 < args.length && !args[i + 1].startsWith("-")) {
+        prompt = args[i + 1];
+        break;
+      }
     }
   }
-  return args.filter((a) => !a.startsWith("-")).join(" ").trim();
+  if (!prompt) {
+    prompt = args.filter((a) => !a.startsWith("-")).join(" ").trim();
+  }
+  return stripSlashCommands(prompt);
 }
 
 /**
- * Injects --effort argument into agyArgs if not already provided by user.
+ * Enforces System One effort into agyArgs.
+ * System One strictly governs reasoning effort: strips any existing --effort flag
+ * and sets the forced System One effort level.
  * @param {string[]} agyArgs
  * @param {"low" | "medium" | "high"} effort
  * @returns {string[]}
  */
 export function injectEffortArg(agyArgs, effort) {
-  const hasEffort = agyArgs.some((a) => a === "--effort" || a.startsWith("--effort="));
-  if (hasEffort) return agyArgs;
-  return [...agyArgs, "--effort", effort];
+  const filtered = [];
+  for (let i = 0; i < agyArgs.length; i++) {
+    const a = agyArgs[i];
+    if (a === "--effort") {
+      i++; // skip manually passed effort value
+      continue;
+    }
+    if (a.startsWith("--effort=")) continue;
+    filtered.push(a);
+  }
+  return [...filtered, "--effort", effort];
 }
 
 // ─── Skill scanner ──────────────────────────────────────────────────────────
