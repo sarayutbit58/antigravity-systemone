@@ -6,15 +6,15 @@ import { scanSkills, queryJevRouter, loadConfig, loadEnv } from "./index.mjs";
 import { saveTelemetry } from "./dashboard.mjs";
 
 // ponytail: PreInvocation fires on every model invocation (each tool-call cycle),
-// not once per user message. Dedup by checking if the latest telemetry entry
-// already has the same prompt text.
+// not once per user message. Dedup by checking if recent telemetry already has
+// the exact prompt AND stepIndex to avoid cross-conversation collision.
 const TELEMETRY_PATH = path.join(os.homedir(), ".gemini", "antigravity-cli", "telemetry.json");
-function alreadyLogged(prompt, stepIndex) {
+export function alreadyLogged(prompt, stepIndex, telemetryPath = TELEMETRY_PATH) {
   try {
-    const arr = JSON.parse(fs.readFileSync(TELEMETRY_PATH, "utf8"));
+    const arr = JSON.parse(fs.readFileSync(telemetryPath, "utf8"));
     if (!arr.length) return false;
     if (stepIndex !== undefined && stepIndex >= 0) {
-      return arr.slice(0, 10).some((e) => e.stepIndex === stepIndex);
+      return arr.slice(0, 10).some((e) => e.stepIndex === stepIndex && e.prompt === prompt);
     }
     return arr[0]?.prompt === prompt;
   } catch { return false; }
@@ -90,4 +90,9 @@ async function main() {
   process.stdout.write(JSON.stringify({}));
 }
 
-main();
+// ponytail: auto-run guard - only read stdin and execute when invoked directly as CLI hook script
+const currentFilePath = new URL(import.meta.url).pathname;
+const invokedPath = process.argv[1]?.replace(/\\/g, "/");
+if (invokedPath && currentFilePath.endsWith(invokedPath.replace(/^[A-Za-z]:/, ""))) {
+  main();
+}
