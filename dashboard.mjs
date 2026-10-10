@@ -67,6 +67,49 @@ export function saveTelemetry(entry) {
   fs.writeFileSync(TELEMETRY_PATH, JSON.stringify(list, null, 2), "utf8");
 }
 
+export const MODEL_PRICING_CATALOG = {
+  "claude-3-7-sonnet": { name: "Claude 3.7 Sonnet", provider: "Anthropic", inputPerM: 3.00, outputPerM: 15.00 },
+  "claude-3-5-sonnet": { name: "Claude 3.5 Sonnet", provider: "Anthropic", inputPerM: 3.00, outputPerM: 15.00 },
+  "claude-3-5-haiku":  { name: "Claude 3.5 Haiku",  provider: "Anthropic", inputPerM: 0.80, outputPerM: 4.00 },
+  "claude-3-opus":     { name: "Claude 3 Opus",       provider: "Anthropic", inputPerM: 15.00, outputPerM: 75.00 },
+  "gemini-2.5-pro":    { name: "Gemini 2.5 Pro",     provider: "Google",    inputPerM: 1.25, outputPerM: 5.00 },
+  "gemini-2.0-flash":  { name: "Gemini 2.0 Flash",   provider: "Google",    inputPerM: 0.10, outputPerM: 0.40 },
+  "gemini-1.5-pro":    { name: "Gemini 1.5 Pro",     provider: "Google",    inputPerM: 1.25, outputPerM: 5.00 },
+  "gemini-1.5-flash":  { name: "Gemini 1.5 Flash",   provider: "Google",    inputPerM: 0.075, outputPerM: 0.30 },
+  "gpt-4o":            { name: "GPT-4o",             provider: "OpenAI",    inputPerM: 2.50, outputPerM: 10.00 },
+  "gpt-4o-mini":       { name: "GPT-4o mini",        provider: "OpenAI",    inputPerM: 0.15, outputPerM: 0.60 },
+  "o3-mini":           { name: "o3-mini",            provider: "OpenAI",    inputPerM: 1.10, outputPerM: 4.40 },
+  "o1":                { name: "o1",                 provider: "OpenAI",    inputPerM: 15.00, outputPerM: 60.00 },
+  "deepseek-chat":     { name: "DeepSeek V3",        provider: "DeepSeek",  inputPerM: 0.14, outputPerM: 0.28 },
+  "deepseek-reasoner": { name: "DeepSeek R1",        provider: "DeepSeek",  inputPerM: 0.55, outputPerM: 2.19 }
+};
+
+export function resolveModelPricing(modelName = "") {
+  const norm = (modelName || "").toLowerCase().trim();
+  if (MODEL_PRICING_CATALOG[norm]) return MODEL_PRICING_CATALOG[norm];
+
+  // Fuzzy match keywords
+  if (norm.includes("3-7") || norm.includes("3.7") || (norm.includes("claude") && norm.includes("sonnet")) || norm.includes("sonnet")) {
+    return MODEL_PRICING_CATALOG["claude-3-7-sonnet"];
+  }
+  if (norm.includes("haiku")) return MODEL_PRICING_CATALOG["claude-3-5-haiku"];
+  if (norm.includes("opus")) return MODEL_PRICING_CATALOG["claude-3-opus"];
+  if (norm.includes("flash")) return MODEL_PRICING_CATALOG["gemini-2.0-flash"];
+  if (norm.includes("gemini")) return MODEL_PRICING_CATALOG["gemini-2.5-pro"];
+  if (norm.includes("4o-mini") || (norm.includes("mini") && norm.includes("gpt"))) return MODEL_PRICING_CATALOG["gpt-4o-mini"];
+  if (norm.includes("4o") || norm.includes("gpt-4")) return MODEL_PRICING_CATALOG["gpt-4o"];
+  if (norm.includes("o3")) return MODEL_PRICING_CATALOG["o3-mini"];
+  if (norm.includes("o1")) return MODEL_PRICING_CATALOG["o1"];
+  if (norm.includes("deepseek") || norm.includes("r1")) return MODEL_PRICING_CATALOG["deepseek-reasoner"];
+
+  return {
+    name: modelName || "Gemini 2.5 Pro",
+    provider: "Standard",
+    inputPerM: 1.25,
+    outputPerM: 5.00
+  };
+}
+
 function calculateMetrics(logs, totalSkills = 54) {
   const total = logs.length;
   if (total === 0) {
@@ -75,9 +118,10 @@ function calculateMetrics(logs, totalSkills = 54) {
       avgLatencyMs: 0,
       totalTokensSaved: 0,
       avgTokenSavingsPct: 0,
-      estimatedCostSavedUsd: "0.00",
+      estimatedCostSavedUsd: "0.0000",
       generalModeCount: 0,
       specializedCount: 0,
+      modelStats: {},
       recentLogs: [],
       trendLogs: [],
       skillStats: {}
@@ -87,11 +131,22 @@ function calculateMetrics(logs, totalSkills = 54) {
   let totalLatency = 0;
   let totalSaved = 0;
   let generalCount = 0;
+  let totalCostSaved = 0;
   const skillCount = {};
+  const modelCount = {};
 
   for (const log of logs) {
     totalLatency += log.latencyMs || 0;
-    totalSaved += log.tokensSaved || 0;
+    const tokens = log.tokensSaved || 0;
+    totalSaved += tokens;
+
+    // Resolve real model pricing for this request
+    const pricing = resolveModelPricing(log.model || "gemini-2.5-pro");
+    const rowCost = (tokens / 1_000_000) * pricing.inputPerM;
+    totalCostSaved += rowCost;
+
+    modelCount[pricing.name] = (modelCount[pricing.name] || 0) + 1;
+
     if (!log.matchedSkills || log.matchedSkills.length === 0) {
       generalCount++;
     } else {
@@ -102,8 +157,6 @@ function calculateMetrics(logs, totalSkills = 54) {
   }
 
   const avgLatency = Math.round(totalLatency / total);
-  // Estimate baseline token cost ($0.075 per 1M input tokens for Flash / Gemini)
-  const costSaved = ((totalSaved / 1_000_000) * 0.15).toFixed(4);
   const avgSavedPct = totalSkills > 0 
     ? Math.round(((totalSkills - (logs.reduce((acc, l) => acc + (l.matchedSkills?.length || 0), 0) / total)) / totalSkills) * 100)
     : 0;
@@ -113,14 +166,26 @@ function calculateMetrics(logs, totalSkills = 54) {
     avgLatencyMs: avgLatency,
     totalTokensSaved: totalSaved,
     avgTokenSavingsPct: avgSavedPct,
-    estimatedCostSavedUsd: costSaved,
+    estimatedCostSavedUsd: totalCostSaved.toFixed(4),
     generalModeCount: generalCount,
     specializedCount: total - generalCount,
-    recentLogs: logs.slice(0, 30),
+    modelStats: modelCount,
+    recentLogs: logs.slice(0, 30).map((l) => {
+      const pricing = resolveModelPricing(l.model || "gemini-2.5-pro");
+      const cost = ((l.tokensSaved || 0) / 1_000_000) * pricing.inputPerM;
+      return {
+        ...l,
+        model: l.model || "gemini-2.5-pro",
+        modelName: pricing.name,
+        modelRate: pricing.inputPerM,
+        costSavedUsd: cost.toFixed(4)
+      };
+    }),
     trendLogs: logs.slice(0, 20).reverse().map((l, idx) => ({
       idx: idx + 1,
       id: l.id,
       prompt: l.prompt,
+      model: l.model || "gemini-2.5-pro",
       latencyMs: l.latencyMs || 0,
       tokensSaved: l.tokensSaved || 0,
       matchedSkillsCount: l.matchedSkills?.length || 0,
@@ -177,12 +242,34 @@ export function createDashboardServer() {
       const metrics = calculateMetrics(logs, skills.length);
       metrics.availableSkillsCount = skills.length;
       metrics.config = loadConfig();
+      metrics.models = Object.entries(MODEL_PRICING_CATALOG).map(([id, info]) => ({
+        id,
+        ...info
+      }));
       metrics.skills = skills.map((s) => ({
         ...s,
         hits: metrics.skillStats[s.name] || 0
       }));
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(metrics));
+      return;
+    }
+
+    if (url.pathname === "/api/models") {
+      const q = (url.searchParams.get("q") || "").toLowerCase().trim();
+      let list = Object.entries(MODEL_PRICING_CATALOG).map(([id, info]) => ({
+        id,
+        ...info
+      }));
+      if (q) {
+        list = list.filter((m) =>
+          m.id.toLowerCase().includes(q) ||
+          m.name.toLowerCase().includes(q) ||
+          m.provider.toLowerCase().includes(q)
+        );
+      }
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(list));
       return;
     }
 
@@ -205,12 +292,15 @@ export function createDashboardServer() {
       req.on("data", (chunk) => (body += chunk));
       req.on("end", async () => {
         try {
-          const { prompt, prevContext } = JSON.parse(body || "{}");
+          const { prompt, prevContext, model } = JSON.parse(body || "{}");
           if (!prompt || !prompt.trim()) {
             res.writeHead(400, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ error: "Prompt is required" }));
             return;
           }
+
+          const pickedModel = model || "gemini-2.5-pro";
+          const pricing = resolveModelPricing(pickedModel);
 
           const skills = scanSkills();
           const cfg = loadConfig();
@@ -220,10 +310,12 @@ export function createDashboardServer() {
           ]);
 
           const tokensSaved = (skills.length - result.matchedSkills.length) * 60;
+          const costSaved = ((tokensSaved / 1_000_000) * pricing.inputPerM).toFixed(4);
           const entry = {
             id: `run-${Date.now()}`,
             timestamp: Date.now(),
             prompt: prompt.trim(),
+            model: pickedModel,
             effort: effortResult.effort,
             effortScore: effortResult.score,
             effortConfidence: effortResult.confidence,
@@ -231,6 +323,7 @@ export function createDashboardServer() {
             latencyMs: result.latencyMs,
             totalSkills: skills.length,
             tokensSaved,
+            costSavedUsd: costSaved,
             status: result.error ? "error" : (result.matchedSkills.length > 0 ? "specialized" : "general_mode"),
             probabilities: result.probabilities,
             error: result.error
@@ -246,7 +339,11 @@ export function createDashboardServer() {
             effortConfidence: effortResult.confidence,
             tokensSaved,
             totalSkills: skills.length,
-            timestamp: entry.timestamp
+            timestamp: entry.timestamp,
+            model: pickedModel,
+            modelName: pricing.name,
+            modelRate: pricing.inputPerM,
+            costSavedUsd: costSaved
           }));
         } catch (err) {
           res.writeHead(500, { "Content-Type": "application/json" });
@@ -557,7 +654,7 @@ function renderDashboardHtml() {
         </div>
       </div>
 
-      <!-- Meter 3: Cumulative Tokens Saved -->
+      <!-- Meter 3: Cumulative Tokens Saved & Real Cost Saved -->
       <div class="col-12 col-sm-6 col-xl-3">
         <div class="card h-100 p-3 d-flex flex-column justify-content-between">
           <div>
@@ -568,9 +665,17 @@ function renderDashboardHtml() {
             <h2 id="totalTokensVal" class="mono fw-bold text-warning mb-1">--</h2>
             <p class="small text-secondary mb-0">Tokens prevented from flooding LLM system prompt</p>
           </div>
-          <div class="pt-2 border-top border-secondary-subtle d-flex justify-content-between align-items-center">
-            <span class="small text-secondary">Est. Cost Saved:</span>
-            <span id="estCostVal" class="mono fw-bold text-success">$0.00</span>
+          <div class="pt-2 border-top border-secondary-subtle">
+            <div class="d-flex justify-content-between align-items-center mb-1">
+              <span class="small text-secondary">Real Cost Saved:</span>
+              <span id="estCostVal" class="mono fw-bold text-success fs-5">$0.0000</span>
+            </div>
+            <div class="d-flex justify-content-between align-items-center gap-1">
+              <small class="text-secondary x-small text-truncate">Price Simulator:</small>
+              <select id="simModelSelect" class="form-select form-select-sm bg-black border-secondary text-info mono x-small py-0 px-2" style="width: auto; max-width: 160px; height: 24px;" onchange="recalcCostWithModel(this.value)">
+                <option value="actual">Actual User Pickups</option>
+              </select>
+            </div>
           </div>
         </div>
       </div>
@@ -645,6 +750,24 @@ function renderDashboardHtml() {
           </div>
           <div class="card-body">
             <p class="small text-secondary mb-2">Type any prompt to observe live latency, Noul probabilities, and skill filtration in real time:</p>
+            
+            <!-- Pickup Model Selector Row -->
+            <div class="row g-2 mb-2 align-items-center">
+              <div class="col-12 col-md-7">
+                <div class="input-group input-group-sm">
+                  <span class="input-group-text bg-black border-secondary text-secondary mono x-small">PICKUP MODEL</span>
+                  <select id="testModelSelect" class="form-select bg-dark border-secondary text-light mono x-small" onchange="onTestModelChange(this.value)">
+                    <!-- Populated dynamically with real model prices -->
+                  </select>
+                </div>
+              </div>
+              <div class="col-12 col-md-5 text-md-end">
+                <span id="selectedModelRateBadge" class="badge bg-primary bg-opacity-10 text-info border border-info border-opacity-25 mono x-small">
+                  Rate: $1.25 / 1M input tokens
+                </span>
+              </div>
+            </div>
+
             <div class="row g-2 mb-3">
               <div class="col-12 col-md-8">
                 <input type="text" id="testPromptInput" class="form-control mono bg-dark border-secondary text-light" placeholder="e.g. continue or optimize postgresql query" value="optimize postgresql query with joins">
@@ -663,8 +786,9 @@ function renderDashboardHtml() {
             <div id="liveResultBox" class="p-3 rounded bg-black bg-opacity-30 border border-secondary border-opacity-50" style="display: none;">
               <div class="d-flex justify-content-between align-items-center mb-2">
                 <span class="small fw-bold">Live Execution Metrics</span>
-                <div class="d-flex gap-2 align-items-center">
+                <div class="d-flex gap-2 align-items-center flex-wrap">
                   <span id="liveEffortBadge" class="badge mono fs-6" style="display: none;">EFFORT: --</span>
+                  <span id="liveCostBadge" class="badge bg-success bg-opacity-25 text-success border border-success border-opacity-25 mono fs-6" style="display: none;">SAVED: $0.0000</span>
                   <span id="liveLatencyBadge" class="badge bg-success mono fs-6">0 ms</span>
                 </div>
               </div>
@@ -717,16 +841,18 @@ function renderDashboardHtml() {
         <table class="table table-dark table-hover mb-0 align-middle">
           <thead>
             <tr class="text-secondary small text-uppercase">
-              <th style="width: 130px;">Time</th>
+              <th style="width: 105px;">Time</th>
+              <th style="width: 140px;">Model</th>
               <th>Prompt</th>
-              <th style="width: 90px;" class="text-center">Effort</th>
-              <th style="width: 250px;">Matched Skills</th>
-              <th style="width: 100px;" class="text-end">Latency</th>
-              <th style="width: 120px;" class="text-end">Tokens Saved</th>
+              <th style="width: 85px;" class="text-center">Effort</th>
+              <th style="width: 220px;">Matched Skills</th>
+              <th style="width: 90px;" class="text-end">Latency</th>
+              <th style="width: 110px;" class="text-end">Tokens Saved</th>
+              <th style="width: 110px;" class="text-end">Cost Saved</th>
             </tr>
           </thead>
           <tbody id="telemetryTableBody">
-            <tr><td colspan="6" class="text-center text-secondary py-3">Loading telemetry...</td></tr>
+            <tr><td colspan="8" class="text-center text-secondary py-3">Loading telemetry...</td></tr>
           </tbody>
         </table>
       </div>
@@ -760,6 +886,7 @@ function renderDashboardHtml() {
   <script>
     let cachedSkills = [];
     let cachedMetrics = {};
+    let cachedModels = [];
     let catalogFilter = 'all';
 
     async function fetchMetrics() {
@@ -768,6 +895,8 @@ function renderDashboardHtml() {
         const data = await res.json();
         cachedMetrics = data;
         cachedSkills = data.skills || [];
+        cachedModels = data.models || [];
+        populateModelSelects(cachedModels);
         updateDashboard(data);
         renderTrendChart(data.trendLogs || []);
         syncConfigForm(data.config);
@@ -775,6 +904,57 @@ function renderDashboardHtml() {
       } catch (err) {
         console.error('Failed to load metrics:', err);
       }
+    }
+
+    function populateModelSelects(models) {
+      if (!models || models.length === 0) return;
+      const testSelect = document.getElementById('testModelSelect');
+      const simSelect = document.getElementById('simModelSelect');
+
+      if (testSelect && testSelect.options.length <= 1) {
+        const currVal = testSelect.value;
+        testSelect.innerHTML = models.map(m => {
+          return '<option value="' + m.id + '">' + m.name + ' ($' + m.inputPerM.toFixed(2) + ' / 1M tokens)</option>';
+        }).join('');
+        if (currVal && models.some(m => m.id === currVal)) {
+          testSelect.value = currVal;
+        } else {
+          testSelect.value = 'gemini-2.5-pro';
+        }
+        onTestModelChange(testSelect.value);
+      }
+
+      if (simSelect && simSelect.options.length <= 1) {
+        const currSim = simSelect.value;
+        let simHtml = '<option value="actual">Actual User Pickups</option>';
+        simHtml += models.map(m => {
+          return '<option value="' + m.id + '">' + m.name + ' ($' + m.inputPerM.toFixed(2) + '/M)</option>';
+        }).join('');
+        simSelect.innerHTML = simHtml;
+        if (currSim) simSelect.value = currSim;
+      }
+    }
+
+    function onTestModelChange(val) {
+      const m = cachedModels.find(x => x.id === val);
+      const badge = document.getElementById('selectedModelRateBadge');
+      if (badge && m) {
+        badge.textContent = 'Rate: $' + m.inputPerM.toFixed(2) + ' / 1M input tokens (' + m.provider + ')';
+      }
+    }
+
+    function recalcCostWithModel(val) {
+      const costEl = document.getElementById('estCostVal');
+      if (!costEl) return;
+      if (val === 'actual') {
+        costEl.textContent = '$' + (cachedMetrics.estimatedCostSavedUsd || '0.0000');
+        return;
+      }
+      const m = cachedModels.find(x => x.id === val);
+      if (!m) return;
+      const totalTokens = cachedMetrics.totalTokensSaved || 0;
+      const simCost = (totalTokens / 1000000) * m.inputPerM;
+      costEl.textContent = '$' + simCost.toFixed(4);
     }
 
     function syncConfigForm(cfg) {
@@ -1119,7 +1299,8 @@ function renderDashboardHtml() {
 
       // 3. Totals
       document.getElementById('totalTokensVal').textContent = (data.totalTokensSaved || 0).toLocaleString();
-      document.getElementById('estCostVal').textContent = '$' + (data.estimatedCostSavedUsd || '0.00');
+      const currentSim = document.getElementById('simModelSelect')?.value || 'actual';
+      recalcCostWithModel(currentSim);
 
       // 4. Counts
       document.getElementById('totalReqBadge').textContent = (data.totalRequests || 0) + ' requests';
@@ -1164,7 +1345,7 @@ function renderDashboardHtml() {
       const tbody = document.getElementById('telemetryTableBody');
       const logs = data.recentLogs || [];
       if (logs.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="6" class="text-center text-secondary py-3">No telemetry recorded yet.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="8" class="text-center text-secondary py-3">No telemetry recorded yet.</td></tr>';
       } else {
         tbody.innerHTML = logs.map(l => {
           const d = new Date(l.timestamp);
@@ -1181,14 +1362,32 @@ function renderDashboardHtml() {
             : eff === 'high'
             ? 'bg-danger bg-opacity-25 text-danger border border-danger border-opacity-25'
             : 'bg-warning bg-opacity-25 text-warning border border-warning border-opacity-25';
+
+          const mKey = (l.model || 'gemini-2.5-pro').toLowerCase();
+          let badgeColor = 'bg-secondary bg-opacity-25 text-light';
+          if (mKey.includes('claude') || mKey.includes('sonnet') || mKey.includes('haiku') || mKey.includes('opus')) {
+            badgeColor = 'bg-primary bg-opacity-20 text-info border border-info border-opacity-25';
+          } else if (mKey.includes('gemini')) {
+            badgeColor = 'bg-info bg-opacity-20 text-primary border border-primary border-opacity-25';
+          } else if (mKey.includes('gpt') || mKey.includes('o1') || mKey.includes('o3')) {
+            badgeColor = 'bg-success bg-opacity-20 text-success border border-success border-opacity-25';
+          } else if (mKey.includes('deepseek') || mKey.includes('r1')) {
+            badgeColor = 'bg-warning bg-opacity-20 text-warning border border-warning border-opacity-25';
+          }
+
+          const modelName = l.modelName || l.model || 'gemini-2.5-pro';
+          const costDisplay = l.costSavedUsd ? '+$' + l.costSavedUsd : '+$0.0000';
+
           return \`
             <tr>
               <td class="mono small text-secondary">\${timeStr}</td>
-              <td class="text-truncate" style="max-width: 280px;" title="\${l.prompt}">\${l.prompt}</td>
+              <td><span class="badge \${badgeColor} mono x-small text-truncate" style="max-width: 135px;" title="\${modelName}">\${modelName}</span></td>
+              <td class="text-truncate" style="max-width: 260px;" title="\${l.prompt}">\${l.prompt}</td>
               <td class="text-center"><span class="badge \${effBadgeClass} mono x-small">\${eff.toUpperCase()}</span></td>
               <td>\${skillsHtml}</td>
               <td class="mono text-end \${l.latencyMs < 1000 ? 'text-success' : 'text-warning'}">\${l.latencyMs}ms</td>
               <td class="mono text-end text-info">+\${(l.tokensSaved || 0).toLocaleString()}</td>
+              <td class="mono text-end text-success fw-bold">\${costDisplay}</td>
             </tr>
           \`;
         }).join('');
@@ -1199,6 +1398,7 @@ function renderDashboardHtml() {
       const input = document.getElementById('testPromptInput');
       const prompt = input.value.trim();
       const prevContext = document.getElementById('testContextInput')?.value.trim() || '';
+      const model = document.getElementById('testModelSelect')?.value || 'gemini-2.5-pro';
       if (!prompt) return;
 
       const btn = document.getElementById('btnTestPrompt');
@@ -1212,7 +1412,7 @@ function renderDashboardHtml() {
         const res = await fetch('/api/test', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt, prevContext })
+          body: JSON.stringify({ prompt, prevContext, model })
         });
         const data = await res.json();
 
@@ -1229,7 +1429,13 @@ function renderDashboardHtml() {
           effBadge.style.display = 'inline-block';
         }
 
-        document.getElementById('liveSavingsVal').textContent = \`+\${(data.tokensSaved || 0).toLocaleString()} tokens (\${data.matchedSkills?.length || 0}/\${data.totalSkills || 54} skills loaded)\`;
+        const costBadge = document.getElementById('liveCostBadge');
+        if (costBadge && data.costSavedUsd) {
+          costBadge.textContent = '💵 SAVED: +$' + data.costSavedUsd + ' (' + (data.modelName || data.model) + ')';
+          costBadge.style.display = 'inline-block';
+        }
+
+        document.getElementById('liveSavingsVal').textContent = \`+\${(data.tokensSaved || 0).toLocaleString()} tokens (~$\${data.costSavedUsd || '0.0000'} on \${data.modelName || 'Gemini Pro'})\`;
 
         const skillsList = document.getElementById('liveSkillsList');
         if (data.matchedSkills && data.matchedSkills.length > 0) {
