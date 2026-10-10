@@ -1,0 +1,12 @@
+{
+  "agy-smart-router": {
+    "enabled": true,
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "node ./hook.mjs",
+        "timeout": 5
+      }
+    ]
+  }
+}
