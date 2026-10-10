@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.3.0] - 2026-10-10
+
+### Added
+- **Auto `--effort` Allocation (TypeSafe Score Primitive)**:
+  - Implemented `inferEffortLevel()` and `scoreToEffort()` in `index.mjs` using TypeSafe's typed `Score` primitive across 3 levels (low, medium, high).
+  - Automatically assesses prompt reasoning complexity in <400ms and injects `--effort <low|medium|high>` into Antigravity CLI invocations.
+  - Added `injectEffortArg()` to automatically assign effort while strictly preserving manual user flags when `--effort` is passed explicitly.
+- **TDD Test Suite Expansion**:
+  - Added unit and contract tests in `test.mjs` verifying threshold boundary mapping, offline fallback, and CLI flag preservation.
+
+### Fixed
+- **Hook Deduplication Stalling**:
+  - Added direct execution auto-run guard in `hook.mjs` preventing `stdin` listener hang during module imports in test runners.
+- **Cross-Conversation Collision Guard**:
+  - Hardened `alreadyLogged()` to evaluate `(stepIndex, prompt)` tuples, preventing multi-conversation step collision.
+
+---
+
 ## [1.2.0] - 2026-09-28
 
 ### Added
