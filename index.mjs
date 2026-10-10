@@ -143,6 +143,18 @@ export function extractUserPrompt(args) {
   return args.filter((a) => !a.startsWith("-")).join(" ").trim();
 }
 
+/**
+ * Injects --effort argument into agyArgs if not already provided by user.
+ * @param {string[]} agyArgs
+ * @param {"low" | "medium" | "high"} effort
+ * @returns {string[]}
+ */
+export function injectEffortArg(agyArgs, effort) {
+  const hasEffort = agyArgs.some((a) => a === "--effort" || a.startsWith("--effort="));
+  if (hasEffort) return agyArgs;
+  return [...agyArgs, "--effort", effort];
+}
+
 // ─── Skill scanner ──────────────────────────────────────────────────────────
 /**
  * @typedef {{ name: string, description: string, dirPath: string }} SkillInfo
@@ -266,6 +278,87 @@ export async function queryJevRouter(userPrompt, skills, config, apiKey = proces
   }
 }
 
+// ─── Reasoning Effort Inference (TypeSafe Score Primitive) ───────────────────
+/**
+ * Map numerical Score position [0.0, 2.0] to Antigravity CLI effort level.
+ * @param {number} score
+ * @returns {"low" | "medium" | "high"}
+ */
+export function scoreToEffort(score) {
+  if (score < 0.7) return "low";
+  if (score < 1.5) return "medium";
+  return "high";
+}
+
+/**
+ * Infer reasoning effort using TypeSafe Jev Score question.
+ * @param {string} prompt
+ * @param {{ apiKey?: string, timeoutMs?: number, prevContext?: string }} [options]
+ * @returns {Promise<{ effort: "low" | "medium" | "high", score: number, confidence: number, latencyMs: number, error?: string }>}
+ */
+export async function inferEffortLevel(prompt, options = {}) {
+  const t0 = Date.now();
+  const apiKey = options.apiKey ?? (process.env.TYPESAFE_API_KEY || "");
+  const timeoutMs = options.timeoutMs ?? 1500;
+  const prevContext = options.prevContext ?? "";
+
+  const fallback = (error) => ({
+    effort: "medium",
+    score: 1.0,
+    confidence: 0,
+    latencyMs: Date.now() - t0,
+    error,
+  });
+
+  if (!apiKey) return fallback("TYPESAFE_API_KEY not set");
+  if (!prompt || !prompt.trim()) return fallback();
+
+  const enriched = enrichShortPrompt(prompt, prevContext);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const res = await fetch("https://api.typesafe.ai/v1/systemone", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      signal: controller.signal,
+      body: JSON.stringify({
+        state: enriched,
+        model: "jev-latest",
+        questions: {
+          reasoning_effort: {
+            type: "score",
+            instructions: "How much reasoning effort, cognitive depth, and planning does this user request require?",
+            criteria: [
+              "Low effort: simple question, quick one-liner, lookup, minor typo fix, or straightforward command",
+              "Medium effort: standard code implementation, multi-file edit, debugging an issue, or refactoring",
+              "High effort: complex system architecture, deep multi-step planning, intricate algorithmic problem, or large-scale redesign",
+            ],
+          },
+        },
+      }),
+    });
+    clearTimeout(timer);
+    const latencyMs = Date.now() - t0;
+
+    if (!res.ok) {
+      const t = await res.text().catch(() => "");
+      return { effort: "medium", score: 1.0, confidence: 0, latencyMs, error: `HTTP ${res.status}: ${t}` };
+    }
+
+    const data = await res.json();
+    const ans = data?.answers?.reasoning_effort;
+    const score = typeof ans?.score === "number" && Number.isFinite(ans.score) ? ans.score : 1.0;
+    const confidence = typeof ans?.confidence === "number" && Number.isFinite(ans.confidence) ? ans.confidence : 0;
+    const effort = scoreToEffort(score);
+
+    return { effort, score, confidence, latencyMs };
+  } catch (err) {
+    clearTimeout(timer);
+    return fallback(err.name === "AbortError" ? `Timeout (>${timeoutMs}ms)` : err.message);
+  }
+}
+
 // ─── skills.json lifecycle ──────────────────────────────────────────────────
 export function createSkillsConfig(workspaceRoot, matchedSkills) {
   const agentsDir = path.join(workspaceRoot, ".agents");
@@ -308,6 +401,7 @@ async function run() {
   const cfg = loadConfig();
   const isVerbose = flagVerbose || cfg.verbose;
   const prompt = extractUserPrompt(agyArgs);
+  let effectiveAgyArgs = [...agyArgs];
 
   let cleanupHook = null;
 
@@ -325,6 +419,11 @@ async function run() {
         }
       }
     } catch { /* ignore */ }
+
+    // ── Infer reasoning effort via TypeSafe Score primitive & auto-inject --effort ──
+    const effortResult = await inferEffortLevel(prompt, { timeoutMs: cfg.timeoutMs, prevContext: prevPrompt });
+    effectiveAgyArgs = injectEffortArg(effectiveAgyArgs, effortResult.effort);
+    console.log(`\x1b[35m🎯 [Jev System 1] Reasoning effort: ${effortResult.effort.toUpperCase()} (score: ${effortResult.score.toFixed(2)}, conf: ${(effortResult.confidence * 100).toFixed(0)}%)\x1b[0m`);
 
     // ── Live Jev query on every run ──
     const result = await queryJevRouter(prompt, skills, cfg, undefined, prevPrompt);
@@ -369,6 +468,7 @@ async function run() {
   }
 
   if (dryRun) {
+    console.log(`\x1b[90m🛑 [dry-run] Effective args: ${effectiveAgyArgs.join(" ")}\x1b[0m`);
     console.log("\x1b[90m🛑 [dry-run] Exiting without launching agy.\x1b[0m");
     return;
   }
@@ -382,7 +482,7 @@ async function run() {
     process.on("uncaughtException", (e) => { once(); console.error(e); process.exit(1); });
   }
 
-  const child = spawn(process.platform === "win32" ? "agy.exe" : "agy", agyArgs, {
+  const child = spawn(process.platform === "win32" ? "agy.exe" : "agy", effectiveAgyArgs, {
     stdio: "inherit",
     shell: false,
   });
