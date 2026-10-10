@@ -62,14 +62,31 @@ export function saveConfig(updates = {}) {
   if (fs.existsSync(CONFIG_PATH)) {
     try { file = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8")); } catch { /* ignore */ }
   }
+
+  // ponytail: sanitize skillWeights - only keep finite numbers clamped to [0.1, 2.0], allow null to delete
+  const cleanedWeights = { ...(file.skillWeights ?? {}) };
+  if (typeof updates.skillWeights === "object" && updates.skillWeights !== null) {
+    for (const [k, v] of Object.entries(updates.skillWeights)) {
+      if (typeof v === "number" && Number.isFinite(v)) {
+        cleanedWeights[k] = Math.max(0.1, Math.min(Math.round(v * 10) / 10, 2.0));
+      } else if (v === null || v === undefined) {
+        delete cleanedWeights[k];
+      }
+    }
+  }
+
   const merged = {
-    threshold: typeof updates.threshold === "number" ? Math.min(Math.max(Number(updates.threshold), 0.05), 0.95) : (file.threshold ?? DEFAULTS.threshold),
-    timeoutMs: typeof updates.timeoutMs === "number" ? Math.min(Math.max(Math.round(Number(updates.timeoutMs)), 200), 10000) : (file.timeoutMs ?? DEFAULTS.timeoutMs),
-    maxSkills: typeof updates.maxSkills === "number" ? Math.min(Math.max(Math.round(Number(updates.maxSkills)), 1), 20) : (file.maxSkills ?? DEFAULTS.maxSkills),
+    threshold: typeof updates.threshold === "number" && Number.isFinite(updates.threshold)
+      ? Math.min(Math.max(Number(updates.threshold), 0.05), 0.95)
+      : (file.threshold ?? DEFAULTS.threshold),
+    timeoutMs: typeof updates.timeoutMs === "number" && Number.isFinite(updates.timeoutMs)
+      ? Math.min(Math.max(Math.round(Number(updates.timeoutMs)), 200), 10000)
+      : (file.timeoutMs ?? DEFAULTS.timeoutMs),
+    maxSkills: typeof updates.maxSkills === "number" && Number.isFinite(updates.maxSkills)
+      ? Math.min(Math.max(Math.round(Number(updates.maxSkills)), 1), 20)
+      : (file.maxSkills ?? DEFAULTS.maxSkills),
     verbose: typeof updates.verbose === "boolean" ? updates.verbose : (file.verbose ?? DEFAULTS.verbose),
-    skillWeights: typeof updates.skillWeights === "object" && updates.skillWeights !== null
-      ? { ...(file.skillWeights ?? {}), ...updates.skillWeights }
-      : (file.skillWeights ?? {}),
+    skillWeights: cleanedWeights,
   };
   fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(merged, null, 2), "utf8");
@@ -114,7 +131,12 @@ export function parseFlags(argv) {
  */
 export function extractUserPrompt(args) {
   for (let i = 0; i < args.length; i++) {
-    if (["-p", "--print", "-i", "--prompt-interactive", "--prompt"].includes(args[i])) {
+    const a = args[i];
+    // ponytail: support -p="value" or --prompt="value" syntax
+    if (a.startsWith("-p=") || a.startsWith("--print=") || a.startsWith("-i=") || a.startsWith("--prompt=") || a.startsWith("--prompt-interactive=")) {
+      return a.slice(a.indexOf("=") + 1).replace(/^['"]|['"]$/g, "").trim();
+    }
+    if (["-p", "--print", "-i", "--prompt-interactive", "--prompt"].includes(a)) {
       if (i + 1 < args.length && !args[i + 1].startsWith("-")) return args[i + 1];
     }
   }
@@ -186,11 +208,12 @@ export async function queryJevRouter(userPrompt, skills, config, apiKey = proces
   const enrichedPrompt = enrichShortPrompt(userPrompt, prevContext);
 
   // ponytail: build one Noul question per skill. Jev runs them in parallel inside a single request.
+  // Note: Question IDs are for code and not sent to the model, so we explicitly name the skill in instructions.
   const questions = {};
   for (const s of skills.slice(0, 200)) {
     questions[s.name] = {
       type: "noul",
-      instructions: `Is this skill relevant to the user's request?`,
+      instructions: `Does the user's request benefit from or require the "${s.name}" skill?`,
       criteria: {
         true: s.description,
         false: "Not relevant to the user's request",
@@ -222,8 +245,11 @@ export async function queryJevRouter(userPrompt, skills, config, apiKey = proces
     const weights = config.skillWeights ?? {};
 
     for (const [id, ans] of Object.entries(data?.answers ?? {})) {
-      const rawP = ans?.noul ?? 0;
-      const weight = typeof weights[id] === "number" ? Math.max(0.1, Math.min(weights[id], 2.0)) : 1.0;
+      const rawP = typeof ans?.noul === "number" && Number.isFinite(ans.noul) ? ans.noul : 0;
+      const weightVal = weights[id];
+      const weight = typeof weightVal === "number" && Number.isFinite(weightVal)
+        ? Math.max(0.1, Math.min(weightVal, 2.0))
+        : 1.0;
       const effectiveP = Math.min(Math.round(rawP * weight * 100) / 100, 1.0);
       probabilities[id] = effectiveP;
       if (effectiveP >= config.threshold) candidates.push({ name: id, prob: effectiveP });
@@ -359,6 +385,11 @@ async function run() {
   const child = spawn(process.platform === "win32" ? "agy.exe" : "agy", agyArgs, {
     stdio: "inherit",
     shell: false,
+  });
+  child.on("error", (err) => {
+    if (cleanupHook) { cleanupHook(); cleanupHook = null; }
+    console.error(`\x1b[31m❌ Failed to spawn Antigravity CLI (agy): ${err.message}\x1b[0m`);
+    process.exit(1);
   });
   child.on("exit", (code) => process.exit(code ?? 0));
 }
