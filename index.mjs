@@ -196,7 +196,7 @@ export function extractModel(args = [], rawPrompt = "") {
     }
   }
 
-  return "gemini-2.5-pro";
+  return "gemini-3-8-flash";
 }
 
 /**
