@@ -2,7 +2,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
-import { scanSkills, queryJevRouter, loadConfig, loadEnv } from "./index.mjs";
+import { scanSkills, queryJevRouter, inferEffortLevel, loadConfig, loadEnv } from "./index.mjs";
 import { saveTelemetry } from "./dashboard.mjs";
 
 // ponytail: PreInvocation fires on every model invocation (each tool-call cycle),
@@ -64,7 +64,10 @@ async function main() {
       if (lastUserPrompt && !alreadyLogged(lastUserPrompt, lastStepIndex)) {
         const skills = scanSkills();
         const cfg = loadConfig();
-        const result = await queryJevRouter(lastUserPrompt, skills, cfg, undefined, prevUserPrompt);
+        const [result, effortResult] = await Promise.all([
+          queryJevRouter(lastUserPrompt, skills, cfg, undefined, prevUserPrompt),
+          inferEffortLevel(lastUserPrompt, { timeoutMs: cfg.timeoutMs, prevContext: prevUserPrompt }),
+        ]);
 
         const tokensSaved = (skills.length - result.matchedSkills.length) * 60;
         saveTelemetry({
@@ -72,6 +75,9 @@ async function main() {
           timestamp: Date.now(),
           stepIndex: lastStepIndex,
           prompt: lastUserPrompt,
+          effort: effortResult.effort,
+          effortScore: effortResult.score,
+          effortConfidence: effortResult.confidence,
           matchedSkills: result.matchedSkills,
           latencyMs: result.latencyMs,
           totalSkills: skills.length,
