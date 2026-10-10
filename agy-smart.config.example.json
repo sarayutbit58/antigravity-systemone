@@ -1,0 +1,13 @@
+{
+  "$schema": "./agy-smart.schema.json",
+  "threshold": 0.5,
+  "timeoutMs": 2000,
+  "maxSkills": 5,
+  "verbose": false,
+  "skillWeights": {
+    "docker-expert": 1.2,
+    "postgresql-optimization": 1.2,
+    "react-best-practices": 1.0,
+    "pitch-psychologist": 0.8
+  }
+}
