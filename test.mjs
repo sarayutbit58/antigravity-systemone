@@ -247,7 +247,7 @@ console.log("🧪 Running agy-smart verification tests (live-only mode)...\n");
   assert.equal(extractModel(["--model=claude-3-5-sonnet", "-p", "hello"], ""), "claude-3-5-sonnet");
 
   // Fallback to default
-  assert.equal(extractModel(["-p", "hello"], "hello"), "gemini-2.5-pro");
+  assert.equal(extractModel(["-p", "hello"], "hello"), "gemini-3-8-flash");
 
   console.log("  ✓ extractModel (detects model pickup from slash commands and CLI flags)");
 }
