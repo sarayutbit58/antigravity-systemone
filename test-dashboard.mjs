@@ -27,7 +27,8 @@ server.listen(TEST_PORT, async () => {
     assert.ok(htmlRes.body.includes("Live Router Settings"), "HTML should contain config modal");
     assert.ok(htmlRes.body.includes("Skills Catalog & Routing Matrix"), "HTML should contain skills catalog");
     assert.ok(htmlRes.body.includes("Sensitivity Multiplier"), "HTML should contain sensitivity multiplier slider");
-    console.log("  ✓ GET / (HTML Dashboard rendered with Timeline, Config, Catalog & Sensitivity Sliders)");
+    assert.ok(htmlRes.body.includes("Effort"), "HTML should contain Effort table column");
+    console.log("  ✓ GET / (HTML Dashboard rendered with Timeline, Config, Catalog, Sensitivity Sliders & Effort Column)");
 
     // 2. Test GET /api/metrics
     const metricsRes = await get("/api/metrics");
@@ -104,7 +105,8 @@ server.listen(TEST_PORT, async () => {
     const testResult = JSON.parse(testRes.body);
     assert.ok(Array.isArray(testResult.matchedSkills), "matchedSkills should be array");
     assert.ok(typeof testResult.latencyMs === "number", "latencyMs should be number");
-    console.log(`  ✓ POST /api/test (Enriched follow-up handled gracefully, Latency: ${testResult.latencyMs}ms)`);
+    assert.ok(["low", "medium", "high"].includes(testResult.effort), "effort should be low, medium, or high");
+    console.log(`  ✓ POST /api/test (Enriched follow-up handled gracefully, Latency: ${testResult.latencyMs}ms, Effort: ${testResult.effort.toUpperCase()})`);
 
     console.log("\n🎉 All Dashboard verification tests passed!");
   } catch (err) {
