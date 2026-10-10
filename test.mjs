@@ -15,6 +15,7 @@ import {
   inferEffortLevel,
   scoreToEffort,
   injectEffortArg,
+  stripSlashCommands,
 } from "./index.mjs";
 
 import { alreadyLogged } from "./hook.mjs";
@@ -203,17 +204,33 @@ console.log("🧪 Running agy-smart verification tests (live-only mode)...\n");
   console.log("  ✓ inferEffortLevel & scoreToEffort (TypeSafe Score primitive)");
 }
 
-// ─── Test 10: injectEffortArg auto-injection & user preference preservation ─
+// ─── Test 10: stripSlashCommands model switcher filtering ────────────────────
+{
+  assert.equal(stripSlashCommands("/model claude-3-7-sonnet optimize sql query"), "optimize sql query");
+  assert.equal(stripSlashCommands("/mode pro refactor this function"), "refactor this function");
+  assert.equal(stripSlashCommands("/m gpt-4o fix bug"), "fix bug");
+  assert.equal(stripSlashCommands("build react app"), "build react app");
+  assert.equal(stripSlashCommands(""), "");
+  console.log("  ✓ stripSlashCommands (filters /model, /mode, /m prefixes for clean task routing)");
+}
+
+// ─── Test 11: injectEffortArg auto-injection & forced System One effort ──────
 {
   // Case 1: Injects effort when missing
   assert.deepEqual(injectEffortArg(["-p", "hello"], "high"), ["-p", "hello", "--effort", "high"]);
   assert.deepEqual(injectEffortArg(["-i", "prompt"], "low"), ["-i", "prompt", "--effort", "low"]);
 
-  // Case 2: Preserves user explicit --effort
-  assert.deepEqual(injectEffortArg(["-p", "hello", "--effort", "low"], "high"), ["-p", "hello", "--effort", "low"]);
-  assert.deepEqual(injectEffortArg(["-p", "hello", "--effort=medium"], "high"), ["-p", "hello", "--effort=medium"]);
+  // Case 2: Forces System One effort over manual --effort flags (Jev authority)
+  assert.deepEqual(injectEffortArg(["-p", "hello", "--effort", "low"], "high"), ["-p", "hello", "--effort", "high"]);
+  assert.deepEqual(injectEffortArg(["-p", "hello", "--effort=medium"], "high"), ["-p", "hello", "--effort", "high"]);
 
-  console.log("  ✓ injectEffortArg (auto-injection & explicit flag preservation)");
+  // Case 3: Preserves manual --model while overriding --effort
+  assert.deepEqual(
+    injectEffortArg(["--model", "claude-3-7-sonnet", "-p", "hello", "--effort", "low"], "medium"),
+    ["--model", "claude-3-7-sonnet", "-p", "hello", "--effort", "medium"]
+  );
+
+  console.log("  ✓ injectEffortArg (enforces System One effort & preserves selected --model)");
 }
 
 console.log("\n🎉 All agy-smart tests passed (live-only mode)!");
