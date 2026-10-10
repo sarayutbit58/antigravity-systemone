@@ -14,6 +14,8 @@ import {
   enrichShortPrompt,
 } from "./index.mjs";
 
+import { alreadyLogged } from "./hook.mjs";
+
 console.log("🧪 Running agy-smart verification tests (live-only mode)...\n");
 
 // ─── Test 1: parseFlags ─────────────────────────────────────────────────────
@@ -35,7 +37,10 @@ console.log("🧪 Running agy-smart verification tests (live-only mode)...\n");
   assert.equal(extractUserPrompt(["-p", "hello world", "--effort", "high"]), "hello world");
   assert.equal(extractUserPrompt(["--prompt-interactive", "debug app"]), "debug app");
   assert.equal(extractUserPrompt(["optimize", "postgresql"]), "optimize postgresql");
-  console.log("  ✓ extractUserPrompt");
+  assert.equal(extractUserPrompt(["-p=hello world"]), "hello world");
+  assert.equal(extractUserPrompt(["--prompt=deploy app"]), "deploy app");
+  assert.equal(extractUserPrompt(['-i="design database"']), "design database");
+  console.log("  ✓ extractUserPrompt (including -p=... and --prompt=... key=val syntax)");
 }
 
 // ─── Test 3: loadConfig ─────────────────────────────────────────────────────
@@ -54,13 +59,19 @@ console.log("🧪 Running agy-smart verification tests (live-only mode)...\n");
 // ─── Test 3b: saveConfig ────────────────────────────────────────────────────
 {
   const original = loadConfig();
-  const updated = saveConfig({ threshold: 0.55, maxSkills: 8, skillWeights: { "docker-expert": 1.3 } });
+  const updated = saveConfig({
+    threshold: 0.55,
+    maxSkills: 8,
+    skillWeights: { "docker-expert": 1.3, "invalid-nan": NaN, "to-delete": null }
+  });
   assert.equal(updated.threshold, 0.55);
   assert.equal(updated.maxSkills, 8);
   assert.equal(updated.skillWeights["docker-expert"], 1.3);
+  assert.equal(updated.skillWeights["invalid-nan"], undefined, "NaN should be rejected");
+  assert.equal(updated.skillWeights["to-delete"], undefined, "null should delete key");
   // Restore original
   saveConfig(original);
-  console.log("  ✓ saveConfig (threshold, maxSkills, & skillWeights update & restore)");
+  console.log("  ✓ saveConfig (threshold, maxSkills, sanitization & skillWeights update & restore)");
 }
 
 // ─── Test 3c: enrichShortPrompt (multi-turn context awareness) ─────────────
@@ -140,6 +151,30 @@ console.log("🧪 Running agy-smart verification tests (live-only mode)...\n");
   assert.ok(res.error, "Should error with fake key");
   assert.ok(res.latencyMs >= 0, "latencyMs should be present");
   console.log(`  ✓ queryJevRouter Noul request structure (errored as expected: ${res.error.slice(0, 40)}...)`);
+}
+
+// ─── Test 8: alreadyLogged deduplication & cross-conversation collision guard
+{
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-smart-tele-"));
+  const teleFile = path.join(tmpDir, "telemetry.json");
+  try {
+    fs.writeFileSync(teleFile, JSON.stringify([
+      { id: "ide-1", stepIndex: 5, prompt: "conversation A prompt" }
+    ]), "utf8");
+
+    // Case 1: Same stepIndex but different prompt (Conversation B) -> MUST NOT be marked already logged
+    assert.equal(alreadyLogged("conversation B prompt", 5, teleFile), false, "Different prompt at same stepIndex must not collide");
+
+    // Case 2: Same stepIndex and same prompt (within same turn re-invocation) -> MUST be marked already logged
+    assert.equal(alreadyLogged("conversation A prompt", 5, teleFile), true, "Same prompt at same stepIndex must dedup");
+
+    // Case 3: Different stepIndex, same prompt -> MUST NOT be marked already logged (new turn)
+    assert.equal(alreadyLogged("conversation A prompt", 6, teleFile), false, "New turn with same prompt must run");
+
+    console.log("  ✓ alreadyLogged (cross-conversation collision guard & turn deduplication)");
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
 }
 
 console.log("\n🎉 All agy-smart tests passed (live-only mode)!");
