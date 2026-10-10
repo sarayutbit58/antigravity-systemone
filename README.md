@@ -170,6 +170,14 @@ node test-dashboard.mjs
 
 ---
 
+## 📚 Documentation
+
+* [Architecture & System Design](ARCHITECTURE.md) - Dual-process cognitive design, Noul questions, turn enrichment, and telemetry internals.
+* [Changelog](CHANGELOG.md) - Complete release notes and version history.
+* [Contributing Guide](CONTRIBUTING.md) - Development setup, code guidelines, and pull request procedures.
+
+---
+
 ## 📄 License
 
 This project is licensed under the [MIT License](LICENSE).
