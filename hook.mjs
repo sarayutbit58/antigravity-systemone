@@ -2,7 +2,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
-import { scanSkills, queryJevRouter, inferEffortLevel, loadConfig, loadEnv } from "./index.mjs";
+import { scanSkills, queryJevRouter, inferEffortLevel, stripSlashCommands, loadConfig, loadEnv } from "./index.mjs";
 import { saveTelemetry } from "./dashboard.mjs";
 
 // ponytail: PreInvocation fires on every model invocation (each tool-call cycle),
@@ -30,6 +30,7 @@ async function main() {
     inputStr += chunk;
   }
 
+  let outputData = {};
   try {
     const data = JSON.parse(inputStr || "{}");
     const transcriptPath = data.transcriptPath;
@@ -49,7 +50,7 @@ async function main() {
             const raw = step.content;
             // Extract from <USER_REQUEST> if present
             const m = raw.match(/<USER_REQUEST>([\s\S]*?)<\/USER_REQUEST>/);
-            const text = (m ? m[1] : raw).trim();
+            const text = stripSlashCommands((m ? m[1] : raw).trim());
             if (!lastUserPrompt) {
               lastUserPrompt = text;
               lastStepIndex = typeof step.step_index === "number" ? step.step_index : i;
@@ -86,6 +87,12 @@ async function main() {
           probabilities: result.probabilities,
           error: result.error
         });
+
+        outputData = {
+          injectSteps: [
+            { ephemeralMessage: `[Jev System 1] Reasoning effort enforced: ${effortResult.effort.toUpperCase()} (score: ${effortResult.score.toFixed(2)})` }
+          ]
+        };
       }
     }
   } catch (err) {
@@ -93,7 +100,7 @@ async function main() {
   }
 
   // Antigravity hook expects JSON on stdout
-  process.stdout.write(JSON.stringify({}));
+  process.stdout.write(JSON.stringify(outputData || {}));
 }
 
 // ponytail: auto-run guard - only read stdin and execute when invoked directly as CLI hook script
