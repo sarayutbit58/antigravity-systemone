@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { exec } from "node:child_process";
-import { scanSkills, queryJevRouter, loadConfig, saveConfig, loadEnv } from "./index.mjs";
+import { scanSkills, queryJevRouter, inferEffortLevel, loadConfig, saveConfig, loadEnv } from "./index.mjs";
 
 loadEnv();
 
@@ -214,13 +214,19 @@ export function createDashboardServer() {
 
           const skills = scanSkills();
           const cfg = loadConfig();
-          const result = await queryJevRouter(prompt, skills, cfg, undefined, prevContext);
+          const [result, effortResult] = await Promise.all([
+            queryJevRouter(prompt, skills, cfg, undefined, prevContext),
+            inferEffortLevel(prompt, { timeoutMs: cfg.timeoutMs, prevContext })
+          ]);
 
           const tokensSaved = (skills.length - result.matchedSkills.length) * 60;
           const entry = {
             id: `run-${Date.now()}`,
             timestamp: Date.now(),
             prompt: prompt.trim(),
+            effort: effortResult.effort,
+            effortScore: effortResult.score,
+            effortConfidence: effortResult.confidence,
             matchedSkills: result.matchedSkills,
             latencyMs: result.latencyMs,
             totalSkills: skills.length,
@@ -235,6 +241,9 @@ export function createDashboardServer() {
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({
             ...result,
+            effort: effortResult.effort,
+            effortScore: effortResult.score,
+            effortConfidence: effortResult.confidence,
             tokensSaved,
             totalSkills: skills.length,
             timestamp: entry.timestamp
@@ -654,7 +663,10 @@ function renderDashboardHtml() {
             <div id="liveResultBox" class="p-3 rounded bg-black bg-opacity-30 border border-secondary border-opacity-50" style="display: none;">
               <div class="d-flex justify-content-between align-items-center mb-2">
                 <span class="small fw-bold">Live Execution Metrics</span>
-                <span id="liveLatencyBadge" class="badge bg-success mono fs-6">0 ms</span>
+                <div class="d-flex gap-2 align-items-center">
+                  <span id="liveEffortBadge" class="badge mono fs-6" style="display: none;">EFFORT: --</span>
+                  <span id="liveLatencyBadge" class="badge bg-success mono fs-6">0 ms</span>
+                </div>
               </div>
               <div class="row g-2 mb-2">
                 <div class="col-sm-6">
@@ -705,15 +717,16 @@ function renderDashboardHtml() {
         <table class="table table-dark table-hover mb-0 align-middle">
           <thead>
             <tr class="text-secondary small text-uppercase">
-              <th style="width: 140px;">Time</th>
+              <th style="width: 130px;">Time</th>
               <th>Prompt</th>
+              <th style="width: 90px;" class="text-center">Effort</th>
               <th style="width: 250px;">Matched Skills</th>
-              <th style="width: 120px;" class="text-end">Latency</th>
-              <th style="width: 130px;" class="text-end">Tokens Saved</th>
+              <th style="width: 100px;" class="text-end">Latency</th>
+              <th style="width: 120px;" class="text-end">Tokens Saved</th>
             </tr>
           </thead>
           <tbody id="telemetryTableBody">
-            <tr><td colspan="5" class="text-center text-secondary py-3">Loading telemetry...</td></tr>
+            <tr><td colspan="6" class="text-center text-secondary py-3">Loading telemetry...</td></tr>
           </tbody>
         </table>
       </div>
@@ -1151,7 +1164,7 @@ function renderDashboardHtml() {
       const tbody = document.getElementById('telemetryTableBody');
       const logs = data.recentLogs || [];
       if (logs.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="5" class="text-center text-secondary py-3">No telemetry recorded yet.</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="6" class="text-center text-secondary py-3">No telemetry recorded yet.</td></tr>';
       } else {
         tbody.innerHTML = logs.map(l => {
           const d = new Date(l.timestamp);
@@ -1162,10 +1175,17 @@ function renderDashboardHtml() {
           } else {
             skillsHtml = '<span class="badge badge-general">General (0 skills)</span>';
           }
+          const eff = (l.effort || 'medium').toLowerCase();
+          const effBadgeClass = eff === 'low'
+            ? 'bg-success bg-opacity-25 text-success border border-success border-opacity-25'
+            : eff === 'high'
+            ? 'bg-danger bg-opacity-25 text-danger border border-danger border-opacity-25'
+            : 'bg-warning bg-opacity-25 text-warning border border-warning border-opacity-25';
           return \`
             <tr>
               <td class="mono small text-secondary">\${timeStr}</td>
-              <td class="text-truncate" style="max-width: 320px;" title="\${l.prompt}">\${l.prompt}</td>
+              <td class="text-truncate" style="max-width: 280px;" title="\${l.prompt}">\${l.prompt}</td>
+              <td class="text-center"><span class="badge \${effBadgeClass} mono x-small">\${eff.toUpperCase()}</span></td>
               <td>\${skillsHtml}</td>
               <td class="mono text-end \${l.latencyMs < 1000 ? 'text-success' : 'text-warning'}">\${l.latencyMs}ms</td>
               <td class="mono text-end text-info">+\${(l.tokensSaved || 0).toLocaleString()}</td>
@@ -1199,6 +1219,15 @@ function renderDashboardHtml() {
         const latBadge = document.getElementById('liveLatencyBadge');
         latBadge.textContent = data.latencyMs + ' ms';
         latBadge.className = 'badge mono fs-6 ' + (data.latencyMs < 1000 ? 'bg-success' : 'bg-warning');
+
+        const effBadge = document.getElementById('liveEffortBadge');
+        if (effBadge && data.effort) {
+          const eff = (data.effort || 'medium').toLowerCase();
+          const effScore = typeof data.effortScore === 'number' ? data.effortScore.toFixed(2) : '';
+          effBadge.textContent = '🎯 ' + eff.toUpperCase() + (effScore ? ' (' + effScore + ')' : '');
+          effBadge.className = 'badge mono fs-6 ' + (eff === 'low' ? 'bg-success' : eff === 'high' ? 'bg-danger' : 'bg-warning text-dark');
+          effBadge.style.display = 'inline-block';
+        }
 
         document.getElementById('liveSavingsVal').textContent = \`+\${(data.tokensSaved || 0).toLocaleString()} tokens (\${data.matchedSkills?.length || 0}/\${data.totalSkills || 54} skills loaded)\`;
 
