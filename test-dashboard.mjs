@@ -50,10 +50,10 @@ server.listen(TEST_PORT, async () => {
     const modelsRes = await get("/api/models");
     assert.equal(modelsRes.status, 200, "/api/models should return 200");
     const modelsList = JSON.parse(modelsRes.body);
-    assert.ok(Array.isArray(modelsList) && modelsList.length >= 10, "Should list all standard models");
+    assert.equal(modelsList.length, 7, "Should list exactly 7 Antigravity models");
     const claudeSearchRes = await get("/api/models?q=claude");
     const claudeList = JSON.parse(claudeSearchRes.body);
-    assert.ok(claudeList.length > 0 && claudeList.every(m => m.name.toLowerCase().includes("claude") || m.provider.toLowerCase().includes("anthropic")), "Search query should filter models");
+    assert.ok(claudeList.length === 2 && claudeList.every(m => m.name.toLowerCase().includes("claude") || m.provider.toLowerCase().includes("anthropic")), "Search query should filter models");
     console.log(`  ✓ GET /api/models & search (Found ${modelsList.length} models, search 'claude' returned ${claudeList.length})`);
 
     // 3. Test GET /api/skills
@@ -102,7 +102,7 @@ server.listen(TEST_PORT, async () => {
     console.log(`  ✓ GET & POST /api/config (Threshold: ${postResult.config.threshold}, MaxSkills: ${postResult.config.maxSkills}, SkillWeight: docker-expert=${postResult.config.skillWeights["docker-expert"]}x)`);
 
     // 5. Test POST /api/test endpoint structure with model pickup
-    const testPostData = JSON.stringify({ prompt: "continue", prevContext: "build docker container", model: "claude-3-7-sonnet" });
+    const testPostData = JSON.stringify({ prompt: "continue", prevContext: "build docker container", model: "claude-sonnet-4-6" });
     const testRes = await new Promise((resolve, reject) => {
       const req = http.request(`http://localhost:${TEST_PORT}/api/test`, {
         method: "POST",
@@ -121,8 +121,8 @@ server.listen(TEST_PORT, async () => {
     assert.ok(Array.isArray(testResult.matchedSkills), "matchedSkills should be array");
     assert.ok(typeof testResult.latencyMs === "number", "latencyMs should be number");
     assert.ok(["low", "medium", "high"].includes(testResult.effort), "effort should be low, medium, or high");
-    assert.equal(testResult.model, "claude-3-7-sonnet", "should echo picked model");
-    assert.equal(testResult.modelRate, 3.00, "Claude 3.7 Sonnet rate should be $3.00/1M tokens");
+    assert.equal(testResult.model, "claude-sonnet-4-6", "should echo picked model");
+    assert.equal(testResult.modelRate, 3.00, "Claude Sonnet 4.6 rate should be $3.00/1M tokens");
     assert.ok(typeof testResult.costSavedUsd === "string", "costSavedUsd should be returned");
     console.log(`  ✓ POST /api/test with model pickup (Latency: ${testResult.latencyMs}ms, Effort: ${testResult.effort.toUpperCase()}, Model: ${testResult.modelName} @ $${testResult.modelRate}/1M, Saved: $${testResult.costSavedUsd})`);
 
