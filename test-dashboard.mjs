@@ -29,8 +29,9 @@ server.listen(TEST_PORT, async () => {
     assert.ok(htmlRes.body.includes("Sensitivity Multiplier"), "HTML should contain sensitivity multiplier slider");
     assert.ok(htmlRes.body.includes("Effort"), "HTML should contain Effort table column");
     assert.ok(htmlRes.body.includes("PICKUP MODEL"), "HTML should contain PICKUP MODEL selector");
-    assert.ok(htmlRes.body.includes("Real Cost Saved"), "HTML should contain Real Cost Saved label");
-    console.log("  ✓ GET / (HTML Dashboard rendered with Timeline, Config, Catalog, Sensitivity Sliders, Effort & Real Model Pricing)");
+    assert.ok(htmlRes.body.includes("discoveredModelBadge"), "HTML should contain discoveredModelBadge element");
+    assert.ok(htmlRes.body.includes("Active:"), "HTML should contain Active model indicator");
+    console.log("  ✓ GET / (HTML Dashboard rendered with Timeline, Config, Catalog, Sensitivity Sliders, Effort, Real Model Pricing & Discovered Active Model Badge)");
 
     // 2. Test GET /api/metrics
     const metricsRes = await get("/api/metrics");
@@ -39,12 +40,14 @@ server.listen(TEST_PORT, async () => {
     assert.ok(typeof metrics.avgLatencyMs === "number", "metrics.avgLatencyMs should be a number");
     assert.ok(typeof metrics.totalTokensSaved === "number", "metrics.totalTokensSaved should be a number");
     assert.ok(typeof metrics.estimatedCostSavedUsd === "string", "metrics.estimatedCostSavedUsd should be formatted string");
+    assert.ok(metrics.discoveredActiveModel && typeof metrics.discoveredActiveModel.name === "string", "metrics.discoveredActiveModel should exist with name");
+    assert.ok(typeof metrics.discoveredActiveModel.inputPerM === "number", "metrics.discoveredActiveModel.inputPerM should be number");
     assert.ok(Array.isArray(metrics.models), "metrics.models should be an array");
     assert.ok(metrics.models.length > 0, "metrics.models should contain pricing catalog");
     assert.ok(Array.isArray(metrics.recentLogs), "metrics.recentLogs should be an array");
     assert.ok(Array.isArray(metrics.trendLogs), "metrics.trendLogs should be an array");
     assert.ok(metrics.config && typeof metrics.config.threshold === "number", "metrics.config should exist");
-    console.log(`  ✓ GET /api/metrics (Requests: ${metrics.totalRequests}, Avg Latency: ${metrics.avgLatencyMs}ms, Tokens Saved: ${metrics.totalTokensSaved}, Est Cost Saved: $${metrics.estimatedCostSavedUsd}, Models: ${metrics.models.length})`);
+    console.log(`  ✓ GET /api/metrics (Requests: ${metrics.totalRequests}, Active: ${metrics.discoveredActiveModel.name}, Avg Latency: ${metrics.avgLatencyMs}ms, Tokens Saved: ${metrics.totalTokensSaved}, Est Cost Saved: $${metrics.estimatedCostSavedUsd}, Models: ${metrics.models.length})`);
 
     // 2.5 Test GET /api/models and search
     const modelsRes = await get("/api/models");
