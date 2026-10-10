@@ -96,6 +96,44 @@ export function resolveModelPricing(modelName = "") {
   return MODEL_PRICING_CATALOG["gemini-3-8-flash"];
 }
 
+// ponytail: detect active model in real-time directly from latest Antigravity IDE transcripts
+export function detectActiveModelRealtime() {
+  const brainDir = path.join(os.homedir(), ".gemini", "antigravity-cli", "brain");
+  if (!fs.existsSync(brainDir)) return null;
+  try {
+    const convs = fs.readdirSync(brainDir, { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => ({ file: path.join(brainDir, d.name, ".system_generated", "logs", "transcript.jsonl") }))
+      .filter((d) => fs.existsSync(d.file))
+      .map((d) => ({ ...d, mtime: fs.statSync(d.file).mtimeMs }))
+      .sort((a, b) => b.mtime - a.mtime);
+
+    for (const c of convs.slice(0, 3)) {
+      try {
+        const lines = fs.readFileSync(c.file, "utf8").trim().split("\n");
+        for (let i = lines.length - 1; i >= Math.max(0, lines.length - 80); i--) {
+          const step = JSON.parse(lines[i]);
+          if (step.type === "USER_INPUT" && typeof step.content === "string") {
+            const marker = "Model Selection";
+            const pos = step.content.indexOf(marker);
+            if (pos !== -1) {
+              const chunk = step.content.slice(pos);
+              const toIdx = chunk.indexOf(" to ");
+              if (toIdx !== -1) {
+                const after = chunk.slice(toIdx + 4);
+                const endIdx = after.indexOf(". No need");
+                const model = (endIdx !== -1 ? after.slice(0, endIdx) : after.split(/[\n<]/)[0]).trim();
+                if (model) return model;
+              }
+            }
+          }
+        }
+      } catch { /* skip unparseable line */ }
+    }
+  } catch { /* ignore */ }
+  return null;
+}
+
 function calculateMetrics(logs, totalSkills = 54) {
   const total = logs.length;
   if (total === 0) {
@@ -115,11 +153,14 @@ function calculateMetrics(logs, totalSkills = 54) {
     };
   }
 
-  let lastModel = "gemini-3-8-flash";
-  for (const log of logs) {
-    if (log.model) {
-      lastModel = log.model;
-      break;
+  const liveModel = detectActiveModelRealtime();
+  let lastModel = liveModel || "gemini-3-8-flash";
+  if (!liveModel) {
+    for (const log of logs) {
+      if (log.model) {
+        lastModel = log.model;
+        break;
+      }
     }
   }
   const discoveredActiveModel = resolveModelPricing(lastModel);
@@ -933,7 +974,10 @@ function renderDashboardHtml() {
       }
     }
 
+    let userSelectedModelManually = false;
+
     function onTestModelChange(val) {
+      userSelectedModelManually = true;
       const m = cachedModels.find(x => x.id === val);
       const badge = document.getElementById('selectedModelRateBadge');
       if (badge && m) {
@@ -1282,6 +1326,16 @@ function renderDashboardHtml() {
       if (data.discoveredActiveModel) {
         const nameEl = document.getElementById('discoveredModelName');
         if (nameEl) nameEl.textContent = data.discoveredActiveModel.name || 'Gemini 3.8 Flash (current)';
+
+        // Auto-sync test bench model selector if user hasn't manually overridden it
+        const testSelect = document.getElementById('testModelSelect');
+        if (testSelect && !userSelectedModelManually && data.discoveredActiveModel.id) {
+          testSelect.value = data.discoveredActiveModel.id;
+          const badge = document.getElementById('selectedModelRateBadge');
+          if (badge) {
+            badge.textContent = 'Rate: $' + data.discoveredActiveModel.inputPerM.toFixed(2) + ' / 1M input tokens (' + data.discoveredActiveModel.provider + ')';
+          }
+        }
       }
 
       // 1. Latency Meter
@@ -1484,9 +1538,9 @@ function renderDashboardHtml() {
       }
     }
 
-    // Auto-fetch on page load and every 5 seconds
+    // Auto-fetch on page load and every 2 seconds for real-time model & telemetry sync
     fetchMetrics();
-    setInterval(fetchMetrics, 5000);
+    setInterval(fetchMetrics, 2000);
   </script>
 </body>
 </html>`;
