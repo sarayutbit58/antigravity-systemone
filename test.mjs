@@ -17,6 +17,7 @@ import {
   injectEffortArg,
   stripSlashCommands,
   extractModel,
+  calibrateSkills,
 } from "./index.mjs";
 
 import { alreadyLogged } from "./hook.mjs";
@@ -250,6 +251,63 @@ console.log("🧪 Running agy-smart verification tests (live-only mode)...\n");
   assert.equal(extractModel(["-p", "hello"], "hello"), "gemini-3-8-flash");
 
   console.log("  ✓ extractModel (detects model pickup from slash commands and CLI flags)");
+}
+
+// ─── Test 13: calibrateSkills algorithmic sensitivity auto-calibration ─────
+{
+  // 1. Null-safety and corrupt inputs handling
+  const nullRes = calibrateSkills(null, null, null);
+  assert.equal(nullRes.totalEvaluated, 0);
+  assert.equal(nullRes.stats.boosted, 0);
+  assert.equal(nullRes.stats.dampened, 0);
+  assert.ok(typeof nullRes.stats.unchanged === "number");
+
+  const corruptLogs = [
+    null,
+    undefined,
+    123,
+    "corrupt",
+    { matchedSkills: null, probabilities: null },
+    { matchedSkills: ["docker-expert"], probabilities: { "docker-expert": 0.95 } }
+  ];
+  const corruptRes = calibrateSkills(corruptLogs, { "docker-expert": 1.0 }, null);
+  assert.ok(corruptRes && corruptRes.skillWeights["docker-expert"] !== undefined, "Corrupt logs should be handled safely");
+
+  // 2. Sparse samples (< 3 logs) preservation
+  const sparseLogs = [
+    { matchedSkills: ["docker-expert"], probabilities: { "docker-expert": 0.85 } }
+  ];
+  const sparseRes = calibrateSkills(sparseLogs, { "docker-expert": 1.2 });
+  assert.equal(sparseRes.skillWeights["docker-expert"], 1.2, "Sparse samples should preserve existing weight");
+  assert.equal(sparseRes.deltas["docker-expert"].delta, 0.0);
+  assert.ok(sparseRes.deltas["docker-expert"].reason.includes("Insufficient telemetry samples"));
+
+  // 3. High-precision specialist boost (high SCR, low FP)
+  const boostLogs = Array.from({ length: 15 }, () => ({
+    matchedSkills: ["docker-expert"],
+    probabilities: { "docker-expert": 0.95 }
+  }));
+  const boostRes = calibrateSkills(boostLogs, { "docker-expert": 1.0 }, { threshold: 0.5 });
+  assert.ok(boostRes.skillWeights["docker-expert"] > 1.0, "Specialist skill should be boosted");
+  assert.ok(boostRes.stats.boosted >= 1, "Boosted count should increment");
+
+  // 4. Borderline false-positive dampening
+  const dampenLogs = Array.from({ length: 15 }, () => ({
+    matchedSkills: ["sql-pro"],
+    probabilities: { "sql-pro": 0.52 } // borderline near threshold 0.50
+  }));
+  const dampenRes = calibrateSkills(dampenLogs, { "sql-pro": 1.5 }, { threshold: 0.5 });
+  assert.ok(dampenRes.skillWeights["sql-pro"] < 1.5, "Borderline FP skill should be dampened");
+  assert.ok(dampenRes.stats.dampened >= 1, "Dampened count should increment");
+
+  // 5. Clamping bounds strictly within [0.1, 2.0]
+  const clampLow = calibrateSkills(dampenLogs, { "sql-pro": 0.1 }, { threshold: 0.5 });
+  assert.equal(clampLow.skillWeights["sql-pro"], 0.1, "Multiplier must never drop below 0.1");
+
+  const clampHigh = calibrateSkills(boostLogs, { "docker-expert": 2.0 }, { threshold: 0.5 });
+  assert.equal(clampHigh.skillWeights["docker-expert"], 2.0, "Multiplier must never exceed 2.0");
+
+  console.log("  ✓ calibrateSkills (null-safety, sparse telemetry, specialist boost, FP dampening & [0.1, 2.0] clamping)");
 }
 
 console.log("\n🎉 All agy-smart tests passed (live-only mode)!");
