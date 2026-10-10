@@ -1269,10 +1269,12 @@ export function startDashboardWithFallback(startPort = PORT) {
             exec(`start http://localhost:${port}`);
           }
         } else {
-          // Occupied by something else, try next port
+          // Occupied by something else, close and try next port
+          try { server.close(); } catch { /* ignore */ }
           startDashboardWithFallback(port + 1);
         }
       }).on("error", () => {
+        try { server.close(); } catch { /* ignore */ }
         startDashboardWithFallback(port + 1);
       });
     } else {
