@@ -93,6 +93,173 @@ export function saveConfig(updates = {}) {
   return merged;
 }
 
+/**
+ * Pure algorithmic sensitivity auto-calibration engine.
+ * Evaluates empirical telemetry history to calculate balanced sensitivity multipliers.
+ *
+ * @param {Array<object>} [logs=[]] - Historical telemetry entries
+ * @param {Record<string, number>} [currentWeights={}] - Current skill weights from config
+ * @param {object} [options={}] - Options (e.g. threshold, skills)
+ * @returns {{
+ *   totalEvaluated: number,
+ *   skillWeights: Record<string, number>,
+ *   deltas: Record<string, { current: number, recommended: number, delta: number, reason: string, metrics: { hits: number, hitRate: number, fpRatio: number, scr: number, nearMisses: number } }>,
+ *   recommendations: Record<string, object>,
+ *   stats: { boosted: number, dampened: number, unchanged: number }
+ * }}
+ */
+export function calibrateSkills(logs = [], currentWeights = {}, options = {}) {
+  const safeOptions = (options && typeof options === "object" && !Array.isArray(options)) ? options : {};
+  const safeWeights = (currentWeights && typeof currentWeights === "object" && !Array.isArray(currentWeights)) ? currentWeights : {};
+  const threshold = typeof safeOptions.threshold === "number" && Number.isFinite(safeOptions.threshold)
+    ? safeOptions.threshold
+    : 0.5;
+
+  const validLogs = Array.isArray(logs)
+    ? logs.filter((l) => l && typeof l === "object")
+    : [];
+  const totalEvaluated = validLogs.length;
+  const deltas = {};
+  const recommendedWeights = {};
+  let boosted = 0, dampened = 0, unchanged = 0;
+
+  // Gather unique skill set
+  const skillNamesSet = new Set();
+  if (Array.isArray(safeOptions.skills)) {
+    for (const s of safeOptions.skills) {
+      if (typeof s === "string") skillNamesSet.add(s);
+      else if (s && typeof s.name === "string") skillNamesSet.add(s.name);
+    }
+  } else {
+    try {
+      const scanned = scanSkills();
+      for (const s of scanned) skillNamesSet.add(s.name);
+    } catch { /* ignore */ }
+  }
+  for (const k of Object.keys(safeWeights)) {
+    skillNamesSet.add(k);
+  }
+  for (const log of validLogs) {
+    if (Array.isArray(log.matchedSkills)) {
+      for (const s of log.matchedSkills) skillNamesSet.add(s);
+    }
+    if (log.probabilities && typeof log.probabilities === "object") {
+      for (const s of Object.keys(log.probabilities)) skillNamesSet.add(s);
+    }
+  }
+
+  const isSparse = totalEvaluated < 3;
+  const sampleConfidence = Math.min(1.0, totalEvaluated / 15);
+
+  for (const skill of skillNamesSet) {
+    const rawCurr = safeWeights[skill];
+    const curr = typeof rawCurr === "number" && Number.isFinite(rawCurr)
+      ? Math.max(0.1, Math.min(Math.round(rawCurr * 10) / 10, 2.0))
+      : 1.0;
+
+    if (isSparse) {
+      deltas[skill] = {
+        current: curr,
+        recommended: curr,
+        delta: 0.0,
+        reason: totalEvaluated === 0
+          ? "No telemetry data recorded yet"
+          : "Insufficient telemetry samples (< 3) for calibration",
+        metrics: { hits: 0, hitRate: 0, fpRatio: 0, scr: 0, nearMisses: 0 }
+      };
+      recommendedWeights[skill] = curr;
+      unchanged++;
+      continue;
+    }
+
+    let hits = 0;
+    let borderlineHits = 0; // P in [threshold, threshold + 0.15)
+    let strongHits = 0;     // P >= threshold + 0.20
+    let nearMisses = 0;     // P in [threshold - 0.15, threshold)
+
+    for (const log of validLogs) {
+      const isMatched = Array.isArray(log.matchedSkills) && log.matchedSkills.includes(skill);
+      let prob = null;
+      if (log.probabilities && typeof log.probabilities[skill] === "number") {
+        prob = log.probabilities[skill];
+      }
+
+      if (isMatched) {
+        hits++;
+        if (prob != null) {
+          if (prob < threshold + 0.15) {
+            borderlineHits++;
+          }
+          if (prob >= threshold + 0.20) {
+            strongHits++;
+          }
+        }
+      } else {
+        if (prob != null && prob >= threshold - 0.15 && prob < threshold) {
+          nearMisses++;
+        }
+      }
+    }
+
+    const hitRate = hits / totalEvaluated;
+    const fpRatio = hits > 0 ? (borderlineHits / hits) : 0;
+    const scr = hits > 0 ? (strongHits / hits) : 0;
+
+    let delta = 0.0;
+    let reason = "Balanced / optimal routing";
+
+    if (hitRate > 0.20 && fpRatio > 0.40) {
+      // Case 1: Severe over-triggering with high borderline false-positive proxy
+      delta = -Math.min(0.6, (hitRate - 0.15) * 1.2 + fpRatio * 0.4);
+      reason = `Over-triggering (${Math.round(hitRate * 100)}%) with high borderline FP ratio (${Math.round(fpRatio * 100)}%)`;
+    } else if (fpRatio > 0.50 && hits >= 3) {
+      // Case 2: Borderline false-positive tendency
+      delta = -Math.min(0.4, fpRatio * 0.4);
+      reason = `Borderline trigger tendency (${Math.round(fpRatio * 100)}% near threshold)`;
+    } else if (scr >= 0.70 && fpRatio < 0.20 && hits >= 2) {
+      // Case 3: High-precision specialist boost
+      delta = Math.min(0.4, 0.15 + scr * 0.2);
+      reason = `High-precision specialist (${Math.round(scr * 100)}% strong triggers)`;
+    } else if (nearMisses >= 2 && hitRate < 0.08) {
+      // Case 4: Near-threshold suppressed skill boost
+      delta = Math.min(0.3, 0.10 + (nearMisses / 10) * 0.2);
+      reason = `Near-threshold suppressed (${nearMisses} near-misses)`;
+    }
+
+    const effectiveDelta = delta * sampleConfidence;
+    const rawRecommended = curr + effectiveDelta;
+    const recommended = Math.max(0.1, Math.min(2.0, Math.round(rawRecommended * 10) / 10));
+    const roundedDelta = Math.round((recommended - curr) * 10) / 10;
+
+    if (roundedDelta > 0) boosted++;
+    else if (roundedDelta < 0) dampened++;
+    else unchanged++;
+
+    deltas[skill] = {
+      current: curr,
+      recommended: recommended,
+      delta: roundedDelta,
+      reason: roundedDelta === 0 && delta !== 0 ? "Adjustment rounded to 0 at current sample scale" : reason,
+      metrics: {
+        hits,
+        hitRate: Math.round(hitRate * 100) / 100,
+        fpRatio: Math.round(fpRatio * 100) / 100,
+        scr: Math.round(scr * 100) / 100,
+        nearMisses
+      }
+    };
+    recommendedWeights[skill] = recommended;
+  }
+
+  return {
+    totalEvaluated,
+    skillWeights: recommendedWeights,
+    deltas,
+    recommendations: deltas,
+    stats: { boosted, dampened, unchanged }
+  };
+}
+
 // ponytail: short prompts (< 8 words or conversational triggers) lack domain keywords.
 // Enrich with previous context so Jev router retains relevant skills across follow-ups.
 export function enrichShortPrompt(prompt, prevContext = "") {
