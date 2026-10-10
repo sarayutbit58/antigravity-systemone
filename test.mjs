@@ -16,6 +16,7 @@ import {
   scoreToEffort,
   injectEffortArg,
   stripSlashCommands,
+  extractModel,
 } from "./index.mjs";
 
 import { alreadyLogged } from "./hook.mjs";
@@ -231,6 +232,24 @@ console.log("🧪 Running agy-smart verification tests (live-only mode)...\n");
   );
 
   console.log("  ✓ injectEffortArg (enforces System One effort & preserves selected --model)");
+}
+
+// ─── Test 12: extractModel detection from prompt & CLI args ─────────────────
+{
+  // From prompt slash command
+  assert.equal(extractModel([], "/model claude-3-7-sonnet create an app"), "claude-3-7-sonnet");
+  assert.equal(extractModel([], "/mode pro fix this bug"), "pro");
+  assert.equal(extractModel([], "/m gpt-4o optimize performance"), "gpt-4o");
+
+  // From CLI arguments
+  assert.equal(extractModel(["--model", "gemini-2.0-flash", "-p", "hello"], ""), "gemini-2.0-flash");
+  assert.equal(extractModel(["-m", "o3-mini", "-p", "hello"], ""), "o3-mini");
+  assert.equal(extractModel(["--model=claude-3-5-sonnet", "-p", "hello"], ""), "claude-3-5-sonnet");
+
+  // Fallback to default
+  assert.equal(extractModel(["-p", "hello"], "hello"), "gemini-2.5-pro");
+
+  console.log("  ✓ extractModel (detects model pickup from slash commands and CLI flags)");
 }
 
 console.log("\n🎉 All agy-smart tests passed (live-only mode)!");
