@@ -68,46 +68,32 @@ export function saveTelemetry(entry) {
 }
 
 export const MODEL_PRICING_CATALOG = {
-  "claude-3-7-sonnet": { name: "Claude 3.7 Sonnet", provider: "Anthropic", inputPerM: 3.00, outputPerM: 15.00 },
-  "claude-3-5-sonnet": { name: "Claude 3.5 Sonnet", provider: "Anthropic", inputPerM: 3.00, outputPerM: 15.00 },
-  "claude-3-5-haiku":  { name: "Claude 3.5 Haiku",  provider: "Anthropic", inputPerM: 0.80, outputPerM: 4.00 },
-  "claude-3-opus":     { name: "Claude 3 Opus",       provider: "Anthropic", inputPerM: 15.00, outputPerM: 75.00 },
-  "gemini-2.5-pro":    { name: "Gemini 2.5 Pro",     provider: "Google",    inputPerM: 1.25, outputPerM: 5.00 },
-  "gemini-2.0-flash":  { name: "Gemini 2.0 Flash",   provider: "Google",    inputPerM: 0.10, outputPerM: 0.40 },
-  "gemini-1.5-pro":    { name: "Gemini 1.5 Pro",     provider: "Google",    inputPerM: 1.25, outputPerM: 5.00 },
-  "gemini-1.5-flash":  { name: "Gemini 1.5 Flash",   provider: "Google",    inputPerM: 0.075, outputPerM: 0.30 },
-  "gpt-4o":            { name: "GPT-4o",             provider: "OpenAI",    inputPerM: 2.50, outputPerM: 10.00 },
-  "gpt-4o-mini":       { name: "GPT-4o mini",        provider: "OpenAI",    inputPerM: 0.15, outputPerM: 0.60 },
-  "o3-mini":           { name: "o3-mini",            provider: "OpenAI",    inputPerM: 1.10, outputPerM: 4.40 },
-  "o1":                { name: "o1",                 provider: "OpenAI",    inputPerM: 15.00, outputPerM: 60.00 },
-  "deepseek-chat":     { name: "DeepSeek V3",        provider: "DeepSeek",  inputPerM: 0.14, outputPerM: 0.28 },
-  "deepseek-reasoner": { name: "DeepSeek R1",        provider: "DeepSeek",  inputPerM: 0.55, outputPerM: 2.19 }
+  "gemini-3-8-flash": { name: "Gemini 3.8 Flash (current)", provider: "Google", inputPerM: 0.15, outputPerM: 0.60 },
+  "gemini-3-7-flash": { name: "Gemini 3.7 Flash", provider: "Google", inputPerM: 0.15, outputPerM: 0.60 },
+  "gemini-3-6-flash": { name: "Gemini 3.6 Flash", provider: "Google", inputPerM: 0.10, outputPerM: 0.40 },
+  "gemini-3-1-pro":   { name: "Gemini 3.1 Pro", provider: "Google", inputPerM: 1.25, outputPerM: 5.00 },
+  "claude-sonnet-4-6":{ name: "Claude Sonnet 4.6 (Thinking)", provider: "Anthropic", inputPerM: 3.00, outputPerM: 15.00 },
+  "claude-opus-4-6":  { name: "Claude Opus 4.6 (Thinking)", provider: "Anthropic", inputPerM: 15.00, outputPerM: 75.00 },
+  "gpt-oss-120b":     { name: "GPT-OSS 120B (Medium)", provider: "OpenAI / Open-Source", inputPerM: 0.50, outputPerM: 1.50 }
 };
 
 export function resolveModelPricing(modelName = "") {
   const norm = (modelName || "").toLowerCase().trim();
   if (MODEL_PRICING_CATALOG[norm]) return MODEL_PRICING_CATALOG[norm];
 
-  // Fuzzy match keywords
-  if (norm.includes("3-7") || norm.includes("3.7") || (norm.includes("claude") && norm.includes("sonnet")) || norm.includes("sonnet")) {
-    return MODEL_PRICING_CATALOG["claude-3-7-sonnet"];
+  // Fuzzy match exact agy model keywords
+  if (norm.includes("opus")) return MODEL_PRICING_CATALOG["claude-opus-4-6"];
+  if (norm.includes("sonnet") || norm.includes("claude")) return MODEL_PRICING_CATALOG["claude-sonnet-4-6"];
+  if (norm.includes("oss") || norm.includes("120b") || norm.includes("gpt")) return MODEL_PRICING_CATALOG["gpt-oss-120b"];
+  if (norm.includes("3-1") || norm.includes("3.1") || norm.includes("pro")) return MODEL_PRICING_CATALOG["gemini-3-1-pro"];
+  if (norm.includes("3-6") || norm.includes("3.6")) return MODEL_PRICING_CATALOG["gemini-3-6-flash"];
+  if (norm.includes("3-7") || norm.includes("3.7")) return MODEL_PRICING_CATALOG["gemini-3-7-flash"];
+  if (norm.includes("3-8") || norm.includes("3.8") || norm.includes("flash") || norm.includes("current")) {
+    return MODEL_PRICING_CATALOG["gemini-3-8-flash"];
   }
-  if (norm.includes("haiku")) return MODEL_PRICING_CATALOG["claude-3-5-haiku"];
-  if (norm.includes("opus")) return MODEL_PRICING_CATALOG["claude-3-opus"];
-  if (norm.includes("flash")) return MODEL_PRICING_CATALOG["gemini-2.0-flash"];
-  if (norm.includes("gemini")) return MODEL_PRICING_CATALOG["gemini-2.5-pro"];
-  if (norm.includes("4o-mini") || (norm.includes("mini") && norm.includes("gpt"))) return MODEL_PRICING_CATALOG["gpt-4o-mini"];
-  if (norm.includes("4o") || norm.includes("gpt-4")) return MODEL_PRICING_CATALOG["gpt-4o"];
-  if (norm.includes("o3")) return MODEL_PRICING_CATALOG["o3-mini"];
-  if (norm.includes("o1")) return MODEL_PRICING_CATALOG["o1"];
-  if (norm.includes("deepseek") || norm.includes("r1")) return MODEL_PRICING_CATALOG["deepseek-reasoner"];
 
-  return {
-    name: modelName || "Gemini 2.5 Pro",
-    provider: "Standard",
-    inputPerM: 1.25,
-    outputPerM: 5.00
-  };
+  // Default current Antigravity model
+  return MODEL_PRICING_CATALOG["gemini-3-8-flash"];
 }
 
 function calculateMetrics(logs, totalSkills = 54) {
@@ -299,7 +285,7 @@ export function createDashboardServer() {
             return;
           }
 
-          const pickedModel = model || "gemini-2.5-pro";
+          const pickedModel = model || "gemini-3-8-flash";
           const pricing = resolveModelPricing(pickedModel);
 
           const skills = scanSkills();
@@ -919,7 +905,7 @@ function renderDashboardHtml() {
         if (currVal && models.some(m => m.id === currVal)) {
           testSelect.value = currVal;
         } else {
-          testSelect.value = 'gemini-2.5-pro';
+          testSelect.value = 'gemini-3-8-flash';
         }
         onTestModelChange(testSelect.value);
       }
@@ -1363,19 +1349,17 @@ function renderDashboardHtml() {
             ? 'bg-danger bg-opacity-25 text-danger border border-danger border-opacity-25'
             : 'bg-warning bg-opacity-25 text-warning border border-warning border-opacity-25';
 
-          const mKey = (l.model || 'gemini-2.5-pro').toLowerCase();
+          const mKey = (l.model || 'gemini-3-8-flash').toLowerCase();
           let badgeColor = 'bg-secondary bg-opacity-25 text-light';
-          if (mKey.includes('claude') || mKey.includes('sonnet') || mKey.includes('haiku') || mKey.includes('opus')) {
+          if (mKey.includes('claude') || mKey.includes('sonnet') || mKey.includes('opus')) {
             badgeColor = 'bg-primary bg-opacity-20 text-info border border-info border-opacity-25';
-          } else if (mKey.includes('gemini')) {
+          } else if (mKey.includes('gemini') || mKey.includes('flash') || mKey.includes('pro')) {
             badgeColor = 'bg-info bg-opacity-20 text-primary border border-primary border-opacity-25';
-          } else if (mKey.includes('gpt') || mKey.includes('o1') || mKey.includes('o3')) {
+          } else if (mKey.includes('gpt') || mKey.includes('oss')) {
             badgeColor = 'bg-success bg-opacity-20 text-success border border-success border-opacity-25';
-          } else if (mKey.includes('deepseek') || mKey.includes('r1')) {
-            badgeColor = 'bg-warning bg-opacity-20 text-warning border border-warning border-opacity-25';
           }
 
-          const modelName = l.modelName || l.model || 'gemini-2.5-pro';
+          const modelName = l.modelName || l.model || 'Gemini 3.8 Flash (current)';
           const costDisplay = l.costSavedUsd ? '+$' + l.costSavedUsd : '+$0.0000';
 
           return \`
@@ -1398,7 +1382,7 @@ function renderDashboardHtml() {
       const input = document.getElementById('testPromptInput');
       const prompt = input.value.trim();
       const prevContext = document.getElementById('testContextInput')?.value.trim() || '';
-      const model = document.getElementById('testModelSelect')?.value || 'gemini-2.5-pro';
+      const model = document.getElementById('testModelSelect')?.value || 'gemini-3-8-flash';
       if (!prompt) return;
 
       const btn = document.getElementById('btnTestPrompt');
