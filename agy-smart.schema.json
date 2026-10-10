@@ -1,0 +1,45 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Antigravity System One Config",
+  "description": "Configuration schema for agy-smart TypeSafe Jev skill router",
+  "type": "object",
+  "properties": {
+    "threshold": {
+      "type": "number",
+      "description": "Minimum Noul probability required to load a skill (0.05 to 0.95)",
+      "default": 0.5,
+      "minimum": 0.05,
+      "maximum": 0.95
+    },
+    "timeoutMs": {
+      "type": "integer",
+      "description": "Timeout in milliseconds for TypeSafe Jev API request before fallback (200 to 10000ms)",
+      "default": 2000,
+      "minimum": 200,
+      "maximum": 10000
+    },
+    "maxSkills": {
+      "type": "integer",
+      "description": "Maximum number of specialized skills loaded into session context (1 to 20)",
+      "default": 5,
+      "minimum": 1,
+      "maximum": 20
+    },
+    "verbose": {
+      "type": "boolean",
+      "description": "Enable verbose CLI probability visualization in terminal output",
+      "default": false
+    },
+    "skillWeights": {
+      "type": "object",
+      "description": "Per-skill sensitivity multipliers (0.1 to 2.0x) to boost or dampen specific skills",
+      "additionalProperties": {
+        "type": "number",
+        "minimum": 0.1,
+        "maximum": 2.0
+      },
+      "default": {}
+    }
+  },
+  "additionalProperties": true
+}
