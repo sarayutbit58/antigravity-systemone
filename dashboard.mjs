@@ -107,12 +107,22 @@ function calculateMetrics(logs, totalSkills = 54) {
       estimatedCostSavedUsd: "0.0000",
       generalModeCount: 0,
       specializedCount: 0,
+      discoveredActiveModel: resolveModelPricing("gemini-3-8-flash"),
       modelStats: {},
       recentLogs: [],
       trendLogs: [],
       skillStats: {}
     };
   }
+
+  let lastModel = "gemini-3-8-flash";
+  for (const log of logs) {
+    if (log.model) {
+      lastModel = log.model;
+      break;
+    }
+  }
+  const discoveredActiveModel = resolveModelPricing(lastModel);
 
   let totalLatency = 0;
   let totalSaved = 0;
@@ -127,7 +137,7 @@ function calculateMetrics(logs, totalSkills = 54) {
     totalSaved += tokens;
 
     // Resolve real model pricing for this request
-    const pricing = resolveModelPricing(log.model || "gemini-2.5-pro");
+    const pricing = resolveModelPricing(log.model || "gemini-3-8-flash");
     const rowCost = (tokens / 1_000_000) * pricing.inputPerM;
     totalCostSaved += rowCost;
 
@@ -155,13 +165,14 @@ function calculateMetrics(logs, totalSkills = 54) {
     estimatedCostSavedUsd: totalCostSaved.toFixed(4),
     generalModeCount: generalCount,
     specializedCount: total - generalCount,
+    discoveredActiveModel,
     modelStats: modelCount,
     recentLogs: logs.slice(0, 30).map((l) => {
-      const pricing = resolveModelPricing(l.model || "gemini-2.5-pro");
+      const pricing = resolveModelPricing(l.model || "gemini-3-8-flash");
       const cost = ((l.tokensSaved || 0) / 1_000_000) * pricing.inputPerM;
       return {
         ...l,
-        model: l.model || "gemini-2.5-pro",
+        model: l.model || "gemini-3-8-flash",
         modelName: pricing.name,
         modelRate: pricing.inputPerM,
         costSavedUsd: cost.toFixed(4)
@@ -171,7 +182,7 @@ function calculateMetrics(logs, totalSkills = 54) {
       idx: idx + 1,
       id: l.id,
       prompt: l.prompt,
-      model: l.model || "gemini-2.5-pro",
+      model: l.model || "gemini-3-8-flash",
       latencyMs: l.latencyMs || 0,
       tokensSaved: l.tokensSaved || 0,
       matchedSkillsCount: l.matchedSkills?.length || 0,
@@ -508,9 +519,9 @@ function renderDashboardHtml() {
           <small class="text-secondary">TypeSafe Jev Model Metered Performance Dashboard</small>
         </div>
       </div>
-      <div class="d-flex align-items-center gap-2 mt-2 mt-sm-0">
-        <span class="d-flex align-items-center gap-2 text-secondary small me-2">
-          <span class="pulse-dot"></span> Live Telemetry Active
+      <div class="d-flex align-items-center gap-2 mt-2 mt-sm-0 flex-wrap">
+        <span id="discoveredModelBadge" class="badge bg-primary bg-opacity-15 text-info border border-info border-opacity-25 mono small py-1 px-2 d-flex align-items-center gap-1">
+          <span class="pulse-dot me-1"></span> Active: <span id="discoveredModelName" class="fw-bold">Detecting...</span>
         </span>
         <button class="btn btn-sm btn-outline-info d-flex align-items-center gap-1" data-bs-toggle="modal" data-bs-target="#configModal">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
@@ -902,10 +913,11 @@ function renderDashboardHtml() {
         testSelect.innerHTML = models.map(m => {
           return '<option value="' + m.id + '">' + m.name + ' ($' + m.inputPerM.toFixed(2) + ' / 1M tokens)</option>';
         }).join('');
+        const defaultModelId = (cachedMetrics.discoveredActiveModel && cachedMetrics.discoveredActiveModel.id) || 'gemini-3-8-flash';
         if (currVal && models.some(m => m.id === currVal)) {
           testSelect.value = currVal;
         } else {
-          testSelect.value = 'gemini-3-8-flash';
+          testSelect.value = defaultModelId;
         }
         onTestModelChange(testSelect.value);
       }
@@ -1266,6 +1278,12 @@ function renderDashboardHtml() {
     }
 
     function updateDashboard(data) {
+      // 0. Discovered Active Model Badge
+      if (data.discoveredActiveModel) {
+        const nameEl = document.getElementById('discoveredModelName');
+        if (nameEl) nameEl.textContent = data.discoveredActiveModel.name || 'Gemini 3.8 Flash (current)';
+      }
+
       // 1. Latency Meter
       const lat = data.avgLatencyMs || 0;
       document.getElementById('meterLatencyVal').textContent = lat;
