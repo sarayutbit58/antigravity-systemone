@@ -23,6 +23,7 @@ By default, Antigravity discovers and mounts all installed skills (often 50+ ski
 2. **Selective Mounting:** Dynamically generates a session-scoped `.agents/skills.json` using Antigravity's native `include_only` directive.
 3. **Zero-Token General Mode:** If the request is general coding or conversation, all skills are excluded (`exclude: [".*"]`), saving 100% of skill token overhead.
 4. **Resilient Lifecycle:** Automatically restores or removes temporary configuration upon exit or interrupt (`Ctrl+C`).
+5. **Auto `--effort` Allocation:** Evaluates prompt reasoning depth using TypeSafe's typed `Score` primitive in <400ms, automatically injecting `--effort low|medium|high` into Antigravity CLI while strictly preserving explicit user flags.
 
 ---
 
