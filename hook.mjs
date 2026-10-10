@@ -74,7 +74,7 @@ async function main() {
         ]);
 
         const tokensSaved = (skills.length - result.matchedSkills.length) * 60;
-        const detectedModel = extractModel([], lastRawPrompt) || data.modelName || "gemini-2.5-pro";
+        const detectedModel = extractModel([], lastRawPrompt) || data.modelName || "gemini-3-8-flash";
         saveTelemetry({
           id: `ide-${Date.now()}`,
           timestamp: Date.now(),
