@@ -1,6 +1,6 @@
 {
   "name": "agy-smart",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "description": "Smart System 1 skill router for Antigravity CLI powered by TypeSafe Jev model",
   "main": "index.mjs",
   "type": "module",
@@ -9,6 +9,8 @@
   },
   "scripts": {
     "test": "node test.mjs",
+    "test:dashboard": "node test-dashboard.mjs",
+    "test:all": "node test.mjs && node test-dashboard.mjs",
     "start": "node index.mjs",
     "dashboard": "node dashboard.mjs"
   },
