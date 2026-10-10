@@ -2,7 +2,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
-import { scanSkills, queryJevRouter, inferEffortLevel, stripSlashCommands, loadConfig, loadEnv } from "./index.mjs";
+import { scanSkills, queryJevRouter, inferEffortLevel, stripSlashCommands, extractModel, loadConfig, loadEnv } from "./index.mjs";
 import { saveTelemetry } from "./dashboard.mjs";
 
 // ponytail: PreInvocation fires on every model invocation (each tool-call cycle),
@@ -41,6 +41,7 @@ async function main() {
 
       // Find the most recent USER_INPUT line and previous prompt for context
       let lastUserPrompt = "";
+      let lastRawPrompt = "";
       let prevUserPrompt = "";
       let lastStepIndex = -1;
       for (let i = lines.length - 1; i >= 0; i--) {
@@ -50,8 +51,10 @@ async function main() {
             const raw = step.content;
             // Extract from <USER_REQUEST> if present
             const m = raw.match(/<USER_REQUEST>([\s\S]*?)<\/USER_REQUEST>/);
-            const text = stripSlashCommands((m ? m[1] : raw).trim());
+            const rawText = (m ? m[1] : raw).trim();
+            const text = stripSlashCommands(rawText);
             if (!lastUserPrompt) {
+              lastRawPrompt = rawText;
               lastUserPrompt = text;
               lastStepIndex = typeof step.step_index === "number" ? step.step_index : i;
             } else if (!prevUserPrompt && text !== lastUserPrompt) {
@@ -71,11 +74,13 @@ async function main() {
         ]);
 
         const tokensSaved = (skills.length - result.matchedSkills.length) * 60;
+        const detectedModel = extractModel([], lastRawPrompt) || data.modelName || "gemini-2.5-pro";
         saveTelemetry({
           id: `ide-${Date.now()}`,
           timestamp: Date.now(),
           stepIndex: lastStepIndex,
           prompt: lastUserPrompt,
+          model: detectedModel,
           effort: effortResult.effort,
           effortScore: effortResult.score,
           effortConfidence: effortResult.confidence,
