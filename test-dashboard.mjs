@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
 import * as http from "node:http";
 import { createDashboardServer } from "./dashboard.mjs";
+import { loadConfig } from "./index.mjs";
 
 console.log("🧪 Running agy-smart dashboard API verification tests...\n");
 
 const server = createDashboardServer();
-const TEST_PORT = 3739;
 
-server.listen(TEST_PORT, async () => {
+server.listen(0, async () => {
+  const TEST_PORT = server.address().port;
+
   try {
     // Helper fetcher
     const get = (path) => new Promise((resolve, reject) => {
@@ -16,6 +18,25 @@ server.listen(TEST_PORT, async () => {
         res.on("data", (c) => (data += c));
         res.on("end", () => resolve({ status: res.statusCode, body: data, headers: res.headers }));
       }).on("error", reject);
+    });
+
+    const post = (path, body, headers = {}) => new Promise((resolve, reject) => {
+      const payload = typeof body === "string" ? body : JSON.stringify(body);
+      const reqHeaders = { "Content-Type": "application/json", ...headers };
+      if (!reqHeaders["Content-Length"]) {
+        reqHeaders["Content-Length"] = Buffer.byteLength(payload);
+      }
+      const req = http.request(`http://localhost:${TEST_PORT}${path}`, {
+        method: "POST",
+        headers: reqHeaders
+      }, (res) => {
+        let data = "";
+        res.on("data", (c) => (data += c));
+        res.on("end", () => resolve({ status: res.statusCode, body: data, headers: res.headers }));
+      });
+      req.on("error", reject);
+      req.write(payload);
+      req.end();
     });
 
     // 1. Test GET /
@@ -31,7 +52,14 @@ server.listen(TEST_PORT, async () => {
     assert.ok(htmlRes.body.includes("PICKUP MODEL"), "HTML should contain PICKUP MODEL selector");
     assert.ok(htmlRes.body.includes("discoveredModelBadge"), "HTML should contain discoveredModelBadge element");
     assert.ok(htmlRes.body.includes("Active:"), "HTML should contain Active model indicator");
-    console.log("  ✓ GET / (HTML Dashboard rendered with Timeline, Config, Catalog, Sensitivity Sliders, Effort, Real Model Pricing & Discovered Active Model Badge)");
+
+    // Assert PiP Overlay elements
+    assert.ok(htmlRes.body.includes('id="pipWidget"') || htmlRes.body.includes("pip-overlay"), "HTML should contain #pipWidget");
+    assert.ok(htmlRes.body.includes('id="btnTogglePip"') || htmlRes.body.includes("btnTogglePip"), "HTML should contain #btnTogglePip");
+    assert.ok(htmlRes.body.includes('id="pipActiveModel"') || htmlRes.body.includes("pipActiveModel"), "HTML should contain #pipActiveModel");
+    assert.ok(htmlRes.body.includes('id="pipEffortBadge"') || htmlRes.body.includes("pipEffortBadge"), "HTML should contain #pipEffortBadge");
+    assert.ok(htmlRes.body.includes('id="pipCostSaved"') || htmlRes.body.includes("pipCostSaved"), "HTML should contain #pipCostSaved");
+    console.log("  ✓ GET / (HTML Dashboard rendered with Timeline, Config, Catalog, PiP Widget & Discovered Active Model Badge)");
 
     // 2. Test GET /api/metrics
     const metricsRes = await get("/api/metrics");
@@ -73,52 +101,21 @@ server.listen(TEST_PORT, async () => {
     const initialConfig = JSON.parse(configGetRes.body);
     assert.ok(typeof initialConfig.threshold === "number");
 
-    const postData = JSON.stringify({ threshold: 0.45, maxSkills: 6, skillWeights: { "docker-expert": 1.4 } });
-    const postRes = await new Promise((resolve, reject) => {
-      const req = http.request(`http://localhost:${TEST_PORT}/api/config`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(postData) }
-      }, (res) => {
-        let data = "";
-        res.on("data", (c) => (data += c));
-        res.on("end", () => resolve({ status: res.statusCode, body: data }));
-      });
-      req.on("error", reject);
-      req.write(postData);
-      req.end();
-    });
+    const postRes = await post("/api/config", { threshold: 0.45, maxSkills: 6, skillWeights: { "docker-expert": 1.4 } });
     assert.equal(postRes.status, 200, "/api/config POST should return 200");
     const postResult = JSON.parse(postRes.body);
     assert.equal(postResult.success, true);
     assert.equal(postResult.config.threshold, 0.45);
     assert.equal(postResult.config.maxSkills, 6);
     assert.equal(postResult.config.skillWeights["docker-expert"], 1.4);
+
     // Restore initial config
-    await new Promise((resolve) => {
-      const req = http.request(`http://localhost:${TEST_PORT}/api/config`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" }
-      }, (res) => resolve(res));
-      req.write(JSON.stringify(initialConfig));
-      req.end();
-    });
+    await post("/api/config", initialConfig);
     console.log(`  ✓ GET & POST /api/config (Threshold: ${postResult.config.threshold}, MaxSkills: ${postResult.config.maxSkills}, SkillWeight: docker-expert=${postResult.config.skillWeights["docker-expert"]}x)`);
 
     // 5. Test POST /api/test endpoint structure with model pickup
-    const testPostData = JSON.stringify({ prompt: "continue", prevContext: "build docker container", model: "claude-sonnet-4-6" });
-    const testRes = await new Promise((resolve, reject) => {
-      const req = http.request(`http://localhost:${TEST_PORT}/api/test`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(testPostData) }
-      }, (res) => {
-        let data = "";
-        res.on("data", (c) => (data += c));
-        res.on("end", () => resolve({ status: res.statusCode, body: data }));
-      });
-      req.on("error", reject);
-      req.write(testPostData);
-      req.end();
-    });
+    const testPostData = { prompt: "continue", prevContext: "build docker container", model: "claude-sonnet-4-6" };
+    const testRes = await post("/api/test", testPostData);
     assert.equal(testRes.status, 200, "/api/test should return 200");
     const testResult = JSON.parse(testRes.body);
     assert.ok(Array.isArray(testResult.matchedSkills), "matchedSkills should be array");
@@ -128,6 +125,79 @@ server.listen(TEST_PORT, async () => {
     assert.equal(testResult.modelRate, 3.00, "Claude Sonnet 4.6 rate should be $3.00/1M tokens");
     assert.ok(typeof testResult.costSavedUsd === "string", "costSavedUsd should be returned");
     console.log(`  ✓ POST /api/test with model pickup (Latency: ${testResult.latencyMs}ms, Effort: ${testResult.effort.toUpperCase()}, Model: ${testResult.modelName} @ $${testResult.modelRate}/1M, Saved: $${testResult.costSavedUsd})`);
+
+    // 6. Test GET /api/events (SSE stream & initial handshake)
+    await new Promise((resolveSSE, rejectSSE) => {
+      const sseReq = http.get(`http://localhost:${TEST_PORT}/api/events`, (res) => {
+        assert.equal(res.statusCode, 200);
+        assert.ok((res.headers["content-type"] || "").includes("text/event-stream"), "Must return text/event-stream");
+        assert.ok((res.headers["cache-control"] || "").includes("no-cache"), "Must set no-cache");
+
+        let buffer = "";
+        const timer = setTimeout(() => {
+          sseReq.destroy();
+          rejectSSE(new Error("Timeout waiting for SSE init event"));
+        }, 3000);
+
+        res.on("data", (chunk) => {
+          buffer += chunk.toString();
+          if (buffer.includes("\n\n")) {
+            const parts = buffer.split("\n\n");
+            for (const part of parts) {
+              if (part.includes("event: init")) {
+                clearTimeout(timer);
+                const dataLine = part.split("\n").find((l) => l.startsWith("data:"));
+                assert.ok(dataLine, "SSE init must include data: line");
+                const data = JSON.parse(dataLine.slice(5).trim());
+                assert.ok(data.metrics || data.model, "Init event data must contain model/metrics");
+                sseReq.destroy();
+                resolveSSE();
+                return;
+              }
+            }
+          }
+        });
+      });
+      sseReq.on("error", (err) => {
+        if (err.code !== "ECONNRESET") rejectSSE(err);
+      });
+    });
+    console.log("  ✓ GET /api/events (SSE text/event-stream connection & initial 'init' handshake)");
+
+    // 7. Test POST /api/config/calibrate (dry-run & apply persistence)
+    const backupConfig = loadConfig();
+    const dryRunRes = await post("/api/config/calibrate", { apply: false });
+    assert.equal(dryRunRes.status, 200, "Calibrate dry-run should return 200");
+    const dryData = JSON.parse(dryRunRes.body);
+    assert.equal(dryData.success, true);
+    assert.equal(dryData.applied, false);
+    assert.ok(typeof dryData.skillWeights === "object");
+    assert.ok(typeof dryData.deltas === "object");
+    for (const [s, w] of Object.entries(dryData.skillWeights)) {
+      assert.ok(w >= 0.1 && w <= 2.0, `Calibrated weight for ${s} must be in [0.1, 2.0]`);
+    }
+
+    const applyRes = await post("/api/config/calibrate", { apply: true });
+    assert.equal(applyRes.status, 200, "Calibrate apply should return 200");
+    const applyData = JSON.parse(applyRes.body);
+    assert.equal(applyData.success, true);
+    assert.equal(applyData.applied, true);
+
+    const reloaded = loadConfig();
+    for (const [s, w] of Object.entries(applyData.skillWeights)) {
+      assert.equal(reloaded.skillWeights[s], w, `Persisted weight for ${s} must match`);
+    }
+    // Restore original config
+    await post("/api/config", backupConfig);
+    console.log("  ✓ POST /api/config/calibrate (dry-run recommendation, clamping [0.1, 2.0] & apply persistence)");
+
+    // 8. Test POST /api/config/calibrate error status code (400 Bad Request)
+    const badJsonRes = await post("/api/config/calibrate", "{ invalid: json...", { "Content-Type": "application/json" });
+    assert.equal(badJsonRes.status, 400, "Malformed JSON must return 400 Bad Request");
+
+    const nullBodyRes = await post("/api/config/calibrate", "null", { "Content-Type": "application/json" });
+    assert.equal(nullBodyRes.status, 400, "Null body payload must return 400 Bad Request");
+    console.log("  ✓ POST /api/config/calibrate error handling (returns 400 Bad Request on malformed JSON & non-object body)");
 
     console.log("\n🎉 All Dashboard verification tests passed!");
   } catch (err) {
