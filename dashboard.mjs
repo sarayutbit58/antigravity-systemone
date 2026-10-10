@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { exec } from "node:child_process";
-import { scanSkills, queryJevRouter, inferEffortLevel, loadConfig, saveConfig, loadEnv } from "./index.mjs";
+import { scanSkills, queryJevRouter, inferEffortLevel, loadConfig, saveConfig, loadEnv, calibrateSkills } from "./index.mjs";
 
 loadEnv();
 
@@ -13,9 +13,18 @@ const TELEMETRY_PATH = path.join(
   os.homedir(), ".gemini", "antigravity-cli", "telemetry.json"
 );
 
+let activeServerBroadcaster = null;
+
+export function broadcastSSE(eventName, payload) {
+  if (activeServerBroadcaster) {
+    activeServerBroadcaster(eventName, payload);
+  }
+}
+
 // ponytail: seed initial telemetry if none exists so meters show meaningful data right away
-function getTelemetry() {
-  if (!fs.existsSync(TELEMETRY_PATH)) {
+function getTelemetry(customPath = null) {
+  const targetPath = customPath || TELEMETRY_PATH;
+  if (!fs.existsSync(targetPath)) {
     const seed = [
       {
         id: "seed-1",
@@ -48,71 +57,89 @@ function getTelemetry() {
         status: "general_mode"
       }
     ];
-    fs.mkdirSync(path.dirname(TELEMETRY_PATH), { recursive: true });
-    fs.writeFileSync(TELEMETRY_PATH, JSON.stringify(seed, null, 2), "utf8");
+    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+    fs.writeFileSync(targetPath, JSON.stringify(seed, null, 2), "utf8");
     return seed;
   }
   try {
-    return JSON.parse(fs.readFileSync(TELEMETRY_PATH, "utf8"));
+    return JSON.parse(fs.readFileSync(targetPath, "utf8"));
   } catch {
     return [];
   }
 }
 
-export function saveTelemetry(entry) {
-  const list = getTelemetry();
+export function saveTelemetry(entry, customPath = null) {
+  const targetPath = customPath || TELEMETRY_PATH;
+  const list = getTelemetry(targetPath);
   list.unshift(entry);
   if (list.length > 500) list.length = 500;
-  fs.mkdirSync(path.dirname(TELEMETRY_PATH), { recursive: true });
-  fs.writeFileSync(TELEMETRY_PATH, JSON.stringify(list, null, 2), "utf8");
+  fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+  fs.writeFileSync(targetPath, JSON.stringify(list, null, 2), "utf8");
 }
 
 export const MODEL_PRICING_CATALOG = {
-  "gemini-3-8-flash": { name: "Gemini 3.8 Flash (current)", provider: "Google", inputPerM: 0.15, outputPerM: 0.60 },
-  "gemini-3-7-flash": { name: "Gemini 3.7 Flash", provider: "Google", inputPerM: 0.15, outputPerM: 0.60 },
-  "gemini-3-6-flash": { name: "Gemini 3.6 Flash", provider: "Google", inputPerM: 0.10, outputPerM: 0.40 },
-  "gemini-3-1-pro":   { name: "Gemini 3.1 Pro", provider: "Google", inputPerM: 1.25, outputPerM: 5.00 },
-  "claude-sonnet-4-6":{ name: "Claude Sonnet 4.6 (Thinking)", provider: "Anthropic", inputPerM: 3.00, outputPerM: 15.00 },
-  "claude-opus-4-6":  { name: "Claude Opus 4.6 (Thinking)", provider: "Anthropic", inputPerM: 15.00, outputPerM: 75.00 },
-  "gpt-oss-120b":     { name: "GPT-OSS 120B (Medium)", provider: "OpenAI / Open-Source", inputPerM: 0.50, outputPerM: 1.50 }
+  "gemini-3-8-flash": { id: "gemini-3-8-flash", name: "Gemini 3.8 Flash (current)", provider: "Google", inputPerM: 0.15, outputPerM: 0.60 },
+  "gemini-3-7-flash": { id: "gemini-3-7-flash", name: "Gemini 3.7 Flash", provider: "Google", inputPerM: 0.15, outputPerM: 0.60 },
+  "gemini-3-6-flash": { id: "gemini-3-6-flash", name: "Gemini 3.6 Flash", provider: "Google", inputPerM: 0.10, outputPerM: 0.40 },
+  "gemini-3-1-pro":   { id: "gemini-3-1-pro", name: "Gemini 3.1 Pro", provider: "Google", inputPerM: 1.25, outputPerM: 5.00 },
+  "claude-sonnet-4-6":{ id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6 (Thinking)", provider: "Anthropic", inputPerM: 3.00, outputPerM: 15.00 },
+  "claude-opus-4-6":  { id: "claude-opus-4-6", name: "Claude Opus 4.6 (Thinking)", provider: "Anthropic", inputPerM: 15.00, outputPerM: 75.00 },
+  "gpt-oss-120b":     { id: "gpt-oss-120b", name: "GPT-OSS 120B (Medium)", provider: "OpenAI / Open-Source", inputPerM: 0.50, outputPerM: 1.50 }
 };
 
 export function resolveModelPricing(modelName = "") {
   const norm = (modelName || "").toLowerCase().trim();
-  if (MODEL_PRICING_CATALOG[norm]) return MODEL_PRICING_CATALOG[norm];
+  if (MODEL_PRICING_CATALOG[norm]) return { ...MODEL_PRICING_CATALOG[norm] };
 
   // Fuzzy match exact agy model keywords
-  if (norm.includes("opus")) return MODEL_PRICING_CATALOG["claude-opus-4-6"];
-  if (norm.includes("sonnet") || norm.includes("claude")) return MODEL_PRICING_CATALOG["claude-sonnet-4-6"];
-  if (norm.includes("oss") || norm.includes("120b") || norm.includes("gpt")) return MODEL_PRICING_CATALOG["gpt-oss-120b"];
-  if (norm.includes("3-1") || norm.includes("3.1") || norm.includes("pro")) return MODEL_PRICING_CATALOG["gemini-3-1-pro"];
-  if (norm.includes("3-6") || norm.includes("3.6")) return MODEL_PRICING_CATALOG["gemini-3-6-flash"];
-  if (norm.includes("3-7") || norm.includes("3.7")) return MODEL_PRICING_CATALOG["gemini-3-7-flash"];
-  if (norm.includes("3-8") || norm.includes("3.8") || norm.includes("flash") || norm.includes("current")) {
-    return MODEL_PRICING_CATALOG["gemini-3-8-flash"];
+  let matchedId = "gemini-3-8-flash";
+  if (norm.includes("opus")) matchedId = "claude-opus-4-6";
+  else if (norm.includes("sonnet") || norm.includes("claude")) matchedId = "claude-sonnet-4-6";
+  else if (norm.includes("oss") || norm.includes("120b") || norm.includes("gpt")) matchedId = "gpt-oss-120b";
+  else if (norm.includes("3-1") || norm.includes("3.1") || norm.includes("pro")) matchedId = "gemini-3-1-pro";
+  else if (norm.includes("3-6") || norm.includes("3.6")) matchedId = "gemini-3-6-flash";
+  else if (norm.includes("3-7") || norm.includes("3.7")) matchedId = "gemini-3-7-flash";
+  else if (norm.includes("3-8") || norm.includes("3.8") || norm.includes("flash") || norm.includes("current")) {
+    matchedId = "gemini-3-8-flash";
   }
 
-  // Default current Antigravity model
-  return MODEL_PRICING_CATALOG["gemini-3-8-flash"];
+  return { ...MODEL_PRICING_CATALOG[matchedId] };
 }
 
 // ponytail: detect active model in real-time directly from latest Antigravity IDE transcripts
-export function detectActiveModelRealtime() {
-  const brainDir = path.join(os.homedir(), ".gemini", "antigravity-cli", "brain");
+export function detectActiveModelRealtime(customBrainDir = null) {
+  const brainDir = customBrainDir || path.join(os.homedir(), ".gemini", "antigravity-cli", "brain");
   if (!fs.existsSync(brainDir)) return null;
   try {
-    const convs = fs.readdirSync(brainDir, { withFileTypes: true })
-      .filter((d) => d.isDirectory())
-      .map((d) => ({ file: path.join(brainDir, d.name, ".system_generated", "logs", "transcript.jsonl") }))
-      .filter((d) => fs.existsSync(d.file))
-      .map((d) => ({ ...d, mtime: fs.statSync(d.file).mtimeMs }))
+    const candidateFiles = [];
+    if (fs.statSync(brainDir).isFile()) {
+      candidateFiles.push(brainDir);
+    } else {
+      const direct = path.join(brainDir, "transcript.jsonl");
+      if (fs.existsSync(direct)) candidateFiles.push(direct);
+
+      const entries = fs.readdirSync(brainDir, { withFileTypes: true });
+      for (const d of entries) {
+        if (d.isDirectory()) {
+          const standardPath = path.join(brainDir, d.name, ".system_generated", "logs", "transcript.jsonl");
+          if (fs.existsSync(standardPath)) candidateFiles.push(standardPath);
+          const simplePath = path.join(brainDir, d.name, "transcript.jsonl");
+          if (fs.existsSync(simplePath)) candidateFiles.push(simplePath);
+        }
+      }
+    }
+
+    const convs = candidateFiles
+      .map((f) => ({ file: f, mtime: fs.statSync(f).mtimeMs }))
       .sort((a, b) => b.mtime - a.mtime);
 
     for (const c of convs.slice(0, 3)) {
       try {
         const lines = fs.readFileSync(c.file, "utf8").trim().split("\n");
         for (let i = lines.length - 1; i >= Math.max(0, lines.length - 80); i--) {
-          const step = JSON.parse(lines[i]);
+          if (!lines[i].trim()) continue;
+          let step;
+          try { step = JSON.parse(lines[i]); } catch { continue; }
           if (step.type === "USER_INPUT" && typeof step.content === "string") {
             const marker = "Model Selection";
             const pos = step.content.indexOf(marker);
@@ -134,7 +161,7 @@ export function detectActiveModelRealtime() {
   return null;
 }
 
-function calculateMetrics(logs, totalSkills = 54) {
+function calculateMetrics(logs, totalSkills = 54, customBrainDir = null) {
   const total = logs.length;
   if (total === 0) {
     return {
@@ -153,7 +180,7 @@ function calculateMetrics(logs, totalSkills = 54) {
     };
   }
 
-  const liveModel = detectActiveModelRealtime();
+  const liveModel = detectActiveModelRealtime(customBrainDir);
   let lastModel = liveModel || "gemini-3-8-flash";
   if (!liveModel) {
     for (const log of logs) {
@@ -235,7 +262,78 @@ function calculateMetrics(logs, totalSkills = 54) {
   };
 }
 
-export function createDashboardServer() {
+export function createDashboardServer(options = {}) {
+  const brainDir = options.brainDir || path.join(os.homedir(), ".gemini", "antigravity-cli", "brain");
+  const telemetryPath = options.telemetryPath || TELEMETRY_PATH;
+  const getLogs = () => getTelemetry(telemetryPath);
+
+  const sseClients = new Set();
+  function localBroadcast(eventName, payload) {
+    const msg = `event: ${eventName}\ndata: ${JSON.stringify(payload)}\n\n`;
+    for (const client of sseClients) {
+      try {
+        client.write(msg);
+      } catch {
+        sseClients.delete(client);
+      }
+    }
+  }
+
+  activeServerBroadcaster = localBroadcast;
+
+  let lastDiscoveredModel = detectActiveModelRealtime(brainDir) || "gemini-3-8-flash";
+  let brainWatcher = null;
+  let telemetryWatcher = null;
+  let brainDebounce = null;
+  let teleDebounce = null;
+
+  if (fs.existsSync(brainDir)) {
+    try {
+      brainWatcher = fs.watch(brainDir, { recursive: true }, () => {
+        clearTimeout(brainDebounce);
+        brainDebounce = setTimeout(() => {
+          const liveModel = detectActiveModelRealtime(brainDir);
+          if (liveModel && liveModel !== lastDiscoveredModel) {
+            lastDiscoveredModel = liveModel;
+            const pricing = resolveModelPricing(liveModel);
+            localBroadcast("model_switch", {
+              type: "model_switch",
+              model: pricing,
+              discoveredActiveModel: pricing,
+              timestamp: Date.now()
+            });
+          }
+        }, 25);
+      });
+    } catch { /* platform without recursive watch */ }
+  }
+
+  const teleDir = path.dirname(telemetryPath);
+  if (fs.existsSync(teleDir)) {
+    try {
+      telemetryWatcher = fs.watch(teleDir, (eventType, filename) => {
+        if (!filename || filename.includes("telemetry.json")) {
+          clearTimeout(teleDebounce);
+          teleDebounce = setTimeout(() => {
+            const logs = getLogs();
+            const skills = scanSkills();
+            const metrics = calculateMetrics(logs, skills.length, brainDir);
+            metrics.availableSkillsCount = skills.length;
+            metrics.config = loadConfig();
+            metrics.models = Object.entries(MODEL_PRICING_CATALOG).map(([id, info]) => ({ id, ...info }));
+            metrics.skills = skills.map((s) => ({ ...s, hits: metrics.skillStats[s.name] || 0 }));
+            metrics.calibration = calibrateSkills(logs, metrics.config.skillWeights, { threshold: metrics.config.threshold });
+            localBroadcast("telemetry", {
+              type: "telemetry",
+              metrics,
+              timestamp: Date.now()
+            });
+          }, 25);
+        }
+      });
+    } catch {}
+  }
+
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, `http://${req.headers.host}`);
 
@@ -248,6 +346,130 @@ export function createDashboardServer() {
       res.writeHead(204);
       res.end();
       return;
+    }
+
+    if (url.pathname === "/api/events" && req.method === "GET") {
+      res.writeHead(200, {
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "Cache-Control": "no-cache, no-transform",
+        "Connection": "keep-alive",
+        "Access-Control-Allow-Origin": "*",
+        "X-Accel-Buffering": "no"
+      });
+      if (res.flushHeaders) res.flushHeaders();
+      if (req.socket) {
+        req.socket.setKeepAlive(true);
+        req.socket.setTimeout(0);
+      }
+
+      sseClients.add(res);
+
+      const cleanup = () => {
+        sseClients.delete(res);
+      };
+      req.on("close", cleanup);
+      res.on("finish", cleanup);
+      res.on("error", cleanup);
+
+      // Initial state handshake
+      const logs = getLogs();
+      const skills = scanSkills();
+      const metrics = calculateMetrics(logs, skills.length, brainDir);
+      metrics.availableSkillsCount = skills.length;
+      metrics.config = loadConfig();
+      metrics.models = Object.entries(MODEL_PRICING_CATALOG).map(([id, info]) => ({ id, ...info }));
+      metrics.skills = skills.map((s) => ({ ...s, hits: metrics.skillStats[s.name] || 0 }));
+      metrics.calibration = calibrateSkills(logs, metrics.config.skillWeights, { threshold: metrics.config.threshold });
+
+      const liveModel = detectActiveModelRealtime(brainDir) || lastDiscoveredModel;
+      const pricing = resolveModelPricing(liveModel);
+
+      const initPayload = {
+        type: "init",
+        model: pricing,
+        discoveredActiveModel: pricing,
+        metrics,
+        lastUpdated: Date.now(),
+        timestamp: Date.now()
+      };
+
+      res.write(`event: init\ndata: ${JSON.stringify(initPayload)}\n\n`);
+      return;
+    }
+
+    if (url.pathname === "/api/config/calibrate") {
+      if (req.method === "GET") {
+        const logs = getLogs();
+        const cfg = loadConfig();
+        const calib = calibrateSkills(logs, cfg.skillWeights, { threshold: cfg.threshold });
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          success: true,
+          applied: false,
+          totalEvaluated: calib.totalEvaluated,
+          telemetryCount: calib.totalEvaluated,
+          skillWeights: calib.skillWeights,
+          deltas: calib.deltas,
+          recommendations: calib.deltas,
+          stats: calib.stats,
+          config: cfg
+        }));
+        return;
+      }
+
+      if (req.method === "POST") {
+        let body = "";
+        req.on("data", (chunk) => (body += chunk));
+        req.on("end", () => {
+          let raw;
+          try {
+            raw = JSON.parse(body || "{}");
+          } catch (err) {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Malformed JSON payload: " + err.message }));
+            return;
+          }
+
+          if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "Request body must be a valid JSON object" }));
+            return;
+          }
+
+          try {
+            const payload = raw;
+            const apply = Boolean(payload.apply);
+            const options = (payload.options && typeof payload.options === "object" && !Array.isArray(payload.options)) ? payload.options : {};
+            const logs = getLogs();
+            const cfg = loadConfig();
+            const threshold = typeof options.threshold === "number" ? options.threshold : cfg.threshold;
+
+            const calib = calibrateSkills(logs, cfg.skillWeights, { threshold, ...options });
+
+            if (apply) {
+              saveConfig({ skillWeights: calib.skillWeights });
+            }
+
+            const finalConfig = loadConfig();
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({
+              success: true,
+              applied: apply,
+              totalEvaluated: calib.totalEvaluated,
+              telemetryCount: calib.totalEvaluated,
+              skillWeights: calib.skillWeights,
+              deltas: calib.deltas,
+              recommendations: calib.deltas,
+              stats: calib.stats,
+              config: finalConfig
+            }));
+          } catch (err) {
+            res.writeHead(500, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: err.message }));
+          }
+        });
+        return;
+      }
     }
 
     if (url.pathname === "/api/config") {
@@ -276,8 +498,8 @@ export function createDashboardServer() {
 
     if (url.pathname === "/api/metrics") {
       const skills = scanSkills();
-      const logs = getTelemetry();
-      const metrics = calculateMetrics(logs, skills.length);
+      const logs = getLogs();
+      const metrics = calculateMetrics(logs, skills.length, brainDir);
       metrics.availableSkillsCount = skills.length;
       metrics.config = loadConfig();
       metrics.models = Object.entries(MODEL_PRICING_CATALOG).map(([id, info]) => ({
@@ -288,6 +510,7 @@ export function createDashboardServer() {
         ...s,
         hits: metrics.skillStats[s.name] || 0
       }));
+      metrics.calibration = calibrateSkills(logs, metrics.config.skillWeights, { threshold: metrics.config.threshold });
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(metrics));
       return;
@@ -319,7 +542,7 @@ export function createDashboardServer() {
     }
 
     if (url.pathname === "/api/clear" && req.method === "POST") {
-      fs.writeFileSync(TELEMETRY_PATH, JSON.stringify([], null, 2), "utf8");
+      fs.writeFileSync(telemetryPath, JSON.stringify([], null, 2), "utf8");
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ success: true }));
       return;
@@ -367,7 +590,7 @@ export function createDashboardServer() {
             error: result.error
           };
 
-          saveTelemetry(entry);
+          saveTelemetry(entry, telemetryPath);
 
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({
@@ -401,6 +624,43 @@ export function createDashboardServer() {
     res.writeHead(404, { "Content-Type": "text/plain" });
     res.end("Not Found");
   });
+
+  const origClose = server.close.bind(server);
+  server.close = function (cb) {
+    if (brainDebounce) clearTimeout(brainDebounce);
+    if (teleDebounce) clearTimeout(teleDebounce);
+    if (brainWatcher) {
+      try { brainWatcher.close(); } catch {}
+      brainWatcher = null;
+    }
+    if (telemetryWatcher) {
+      try { telemetryWatcher.close(); } catch {}
+      telemetryWatcher = null;
+    }
+    for (const client of sseClients) {
+      try { client.end(); } catch {}
+      try { client.socket?.destroy(); } catch {}
+      try { client.destroy?.(); } catch {}
+    }
+    sseClients.clear();
+    if (typeof server.closeAllConnections === "function") {
+      try { server.closeAllConnections(); } catch {}
+    }
+    if (activeServerBroadcaster === localBroadcast) {
+      activeServerBroadcaster = null;
+    }
+    return origClose(cb);
+  };
+
+  server.on("close", () => {
+    for (const client of sseClients) {
+      try { client.end(); } catch {}
+    }
+    sseClients.clear();
+  });
+
+  server.broadcastSSE = localBroadcast;
+  server.sseClients = sseClients;
 
   return server;
 }
@@ -540,10 +800,39 @@ function renderDashboardHtml() {
       font-size: 0.8rem;
     }
     .x-small { font-size: 0.75rem; }
+    .pip-overlay {
+      box-sizing: border-box;
+      width: 290px;
+      max-width: 290px;
+      background: #0d1117;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 10px;
+    }
+    body:not(.pip-mode) .pip-overlay {
+      display: none;
+    }
+    body.pip-mode {
+      padding: 12px !important;
+      margin: 0 !important;
+      box-sizing: border-box !important;
+      overflow-x: hidden !important;
+      background: #090d13 !important;
+      display: flex !important;
+      justify-content: center !important;
+      align-items: center !important;
+      min-height: 100vh !important;
+    }
+    body.pip-mode #fullDashboardContainer {
+      display: none !important;
+    }
+    body.pip-mode .pip-overlay {
+      display: block !important;
+      margin: auto;
+    }
   </style>
 </head>
 <body class="p-3 p-md-4">
-  <div class="container-fluid max-w-1400" style="max-width: 1400px;">
+  <div id="fullDashboardContainer" class="container-fluid max-w-1400" style="max-width: 1400px;">
     
     <!-- Top Navbar -->
     <header class="d-flex flex-wrap justify-content-between align-items-center pb-3 mb-4 border-bottom border-secondary-subtle">
@@ -564,6 +853,12 @@ function renderDashboardHtml() {
         <span id="discoveredModelBadge" class="badge bg-primary bg-opacity-15 text-info border border-info border-opacity-25 mono small py-1 px-2 d-flex align-items-center gap-1">
           <span class="pulse-dot me-1"></span> Active: <span id="discoveredModelName" class="fw-bold">Detecting...</span>
         </span>
+        <span id="sseLiveBadge" class="badge bg-success bg-opacity-15 text-success border border-success border-opacity-25 mono small py-1 px-2 d-flex align-items-center gap-1" title="Real-time Server-Sent Events stream active">
+          <span class="pulse-dot me-1"></span> Live SSE
+        </span>
+        <button id="btnTogglePip" class="btn btn-sm btn-outline-info d-flex align-items-center gap-1" onclick="togglePipMode()" title="Toggle Compact Desktop PiP Overlay">
+          🖼️ PiP Overlay
+        </button>
         <button class="btn btn-sm btn-outline-info d-flex align-items-center gap-1" data-bs-toggle="modal" data-bs-target="#configModal">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
           Router Settings
@@ -903,7 +1198,10 @@ function renderDashboardHtml() {
           <span>🧩 Installed Skills Catalog & Routing Matrix</span>
           <span id="catalogCountBadge" class="badge bg-primary bg-opacity-25 text-info border border-info border-opacity-25">54 Skills</span>
         </div>
-        <div class="d-flex gap-2">
+        <div class="d-flex gap-2 align-items-center flex-wrap">
+          <button type="button" class="btn btn-sm btn-outline-warning fw-bold d-flex align-items-center gap-1" id="btnAutoCalibrate" onclick="autoCalibrateAll()" title="Auto-calibrate all skill sensitivity multipliers from empirical telemetry">
+            ⚡ Auto-Calibrate All
+          </button>
           <div class="btn-group btn-group-sm" role="group">
             <button type="button" class="btn btn-outline-secondary active" id="btnFilterAll" onclick="setCatalogFilter('all')">All</button>
             <button type="button" class="btn btn-outline-secondary" id="btnFilterTriggered" onclick="setCatalogFilter('triggered')">Triggered</button>
@@ -919,6 +1217,49 @@ function renderDashboardHtml() {
       </div>
     </div>
 
+  </div>
+
+  <!-- Compact Floating Desktop / PiP Overlay (<320px) -->
+  <div id="pipWidget" class="pip-overlay card shadow-lg border-secondary-subtle">
+    <div class="card-header d-flex justify-content-between align-items-center py-2 px-3 bg-dark border-secondary-subtle">
+      <div class="d-flex align-items-center gap-2">
+        <span class="pulse-dot"></span>
+        <span class="fw-bold fs-6 text-light mono">agy-smart</span>
+        <span id="pipSseStatus" class="badge bg-success bg-opacity-25 text-success mono x-small">LIVE</span>
+      </div>
+      <button type="button" id="btnPipExpand" class="btn btn-sm btn-outline-secondary py-0 px-2 x-small mono" onclick="togglePipMode()" title="Switch to Full Dashboard">
+        ⤢ Expand
+      </button>
+    </div>
+    <div class="card-body p-3">
+      <!-- Active Model -->
+      <div class="mb-2">
+        <div class="text-secondary text-uppercase fw-bold x-small mb-1">Active Model</div>
+        <div class="d-flex justify-content-between align-items-center">
+          <span id="pipActiveModel" class="fw-bold text-info mono small text-truncate" style="max-width: 190px;">Detecting...</span>
+          <span id="pipModelRate" class="badge bg-secondary bg-opacity-25 text-light mono x-small">$0.15/1M</span>
+        </div>
+      </div>
+      <!-- System One Effort -->
+      <div class="mb-2">
+        <div class="text-secondary text-uppercase fw-bold x-small mb-1">System 1 Effort</div>
+        <div class="d-flex justify-content-between align-items-center">
+          <span id="pipEffortBadge" class="badge bg-success mono small">🎯 LOW</span>
+          <span id="pipEffortConfidence" class="text-secondary mono x-small">conf 82%</span>
+        </div>
+      </div>
+      <!-- Cumulative Cost Saved -->
+      <div class="p-2 rounded bg-black bg-opacity-25 border border-secondary-subtle mt-2">
+        <div class="d-flex justify-content-between align-items-center">
+          <span class="text-secondary text-uppercase fw-bold x-small">Cost Saved</span>
+          <span id="pipCostSaved" class="fw-bold text-success mono fs-6">$0.0000</span>
+        </div>
+        <div class="d-flex justify-content-between align-items-center mt-1">
+          <span class="text-secondary x-small">Tokens Saved</span>
+          <span id="pipTokensSaved" class="text-info mono x-small">0 tok</span>
+        </div>
+      </div>
+    </div>
   </div>
 
   <script>
@@ -1248,6 +1589,41 @@ function renderDashboardHtml() {
         const weights = (cachedMetrics.config && cachedMetrics.config.skillWeights) || {};
         const currentWeight = typeof weights[s.name] === 'number' ? weights[s.name] : 1.0;
         const weightBadgeClass = currentWeight > 1.0 ? 'bg-primary' : currentWeight < 1.0 ? 'bg-warning text-dark' : 'bg-secondary';
+
+        const calibDeltas = (cachedMetrics.calibration && (cachedMetrics.calibration.deltas || cachedMetrics.calibration.recommendations)) || {};
+        const rec = calibDeltas[s.name];
+        let calibBadgeHtml = '';
+        if (rec) {
+          if (rec.delta > 0) {
+            calibBadgeHtml = \`
+              <div class="d-flex justify-content-between align-items-center mt-2 pt-1 border-top border-secondary-subtle">
+                <span class="badge bg-success bg-opacity-25 text-success border border-success border-opacity-25 mono x-small" title="\${rec.reason}">
+                  +\${rec.delta.toFixed(1)}x rec (\${rec.recommended.toFixed(1)}x)
+                </span>
+                <button type="button" class="btn btn-sm btn-outline-info px-1 py-0 x-small mono fw-bold" onclick="applySingleCalibration('\${s.name}', \${rec.recommended})">
+                  Apply
+                </button>
+              </div>\`;
+          } else if (rec.delta < 0) {
+            calibBadgeHtml = \`
+              <div class="d-flex justify-content-between align-items-center mt-2 pt-1 border-top border-secondary-subtle">
+                <span class="badge bg-warning bg-opacity-25 text-warning border border-warning border-opacity-25 mono x-small" title="\${rec.reason}">
+                  \${rec.delta.toFixed(1)}x rec (\${rec.recommended.toFixed(1)}x)
+                </span>
+                <button type="button" class="btn btn-sm btn-outline-info px-1 py-0 x-small mono fw-bold" onclick="applySingleCalibration('\${s.name}', \${rec.recommended})">
+                  Apply
+                </button>
+              </div>\`;
+          } else {
+            calibBadgeHtml = \`
+              <div class="d-flex justify-content-between align-items-center mt-2 pt-1 border-top border-secondary-subtle">
+                <span class="badge bg-secondary bg-opacity-25 text-secondary mono x-small" title="\${rec.reason}">
+                  Optimal ✓
+                </span>
+              </div>\`;
+          }
+        }
+
         return \`
           <div class="col-12 col-md-6 col-xl-4">
             <div class="skill-card p-3 h-100 d-flex flex-column justify-content-between">
@@ -1268,9 +1644,10 @@ function renderDashboardHtml() {
                       \${currentWeight.toFixed(1)}x
                     </span>
                   </div>
-                  <input type="range" class="form-range" min="0.5" max="1.5" step="0.1" value="\${currentWeight}"
+                  <input type="range" class="form-range" min="0.1" max="2.0" step="0.1" value="\${currentWeight}"
                     oninput="onSkillWeightInput('\${s.name}', this.value)"
                     onchange="updateSkillWeight('\${s.name}', this.value)">
+                  \${calibBadgeHtml}
                 </div>
               </div>
               <div class="pt-2 border-top border-secondary-subtle d-flex justify-content-between align-items-center">
@@ -1448,6 +1825,7 @@ function renderDashboardHtml() {
           \`;
         }).join('');
       }
+      updatePipWidgetMetrics();
     }
 
     async function runLiveTest() {
@@ -1538,9 +1916,230 @@ function renderDashboardHtml() {
       }
     }
 
-    // Auto-fetch on page load and every 2 seconds for real-time model & telemetry sync
-    fetchMetrics();
-    setInterval(fetchMetrics, 2000);
+    function updatePipWidgetMetrics() {
+      if (!cachedMetrics) return;
+      const activeModel = cachedMetrics.discoveredActiveModel;
+      if (activeModel) syncModelUI(activeModel);
+
+      const costEl = document.getElementById('pipCostSaved');
+      if (costEl) costEl.textContent = '$' + (cachedMetrics.estimatedCostSavedUsd || '0.0000');
+
+      const tokEl = document.getElementById('pipTokensSaved');
+      if (tokEl) tokEl.textContent = (cachedMetrics.totalTokensSaved || 0).toLocaleString() + ' tok';
+
+      const latestLog = cachedMetrics.recentLogs && cachedMetrics.recentLogs[0];
+      const effBadge = document.getElementById('pipEffortBadge');
+      const effConf = document.getElementById('pipEffortConfidence');
+      if (effBadge) {
+        const eff = (latestLog?.effort || 'medium').toLowerCase();
+        effBadge.textContent = '🎯 ' + eff.toUpperCase();
+        effBadge.className = 'badge mono small ' + (eff === 'low' ? 'bg-success' : eff === 'high' ? 'bg-danger' : 'bg-warning text-dark');
+      }
+      if (effConf && latestLog && typeof latestLog.effortConfidence === 'number') {
+        effConf.textContent = 'conf ' + Math.round(latestLog.effortConfidence * 100) + '%';
+      }
+    }
+
+    function syncModelUI(modelObj) {
+      if (!modelObj) return;
+      const nameEl = document.getElementById('discoveredModelName');
+      if (nameEl && modelObj.name) nameEl.textContent = modelObj.name;
+
+      const testSelect = document.getElementById('testModelSelect');
+      if (testSelect && !userSelectedModelManually && modelObj.id) {
+        testSelect.value = modelObj.id;
+        const badge = document.getElementById('selectedModelRateBadge');
+        if (badge && typeof modelObj.inputPerM === 'number') {
+          badge.textContent = 'Rate: $' + modelObj.inputPerM.toFixed(2) + ' / 1M input tokens (' + (modelObj.provider || '') + ')';
+        }
+      }
+
+      const pipModel = document.getElementById('pipActiveModel');
+      if (pipModel && modelObj.name) pipModel.textContent = modelObj.name;
+      const pipRate = document.getElementById('pipModelRate');
+      if (pipRate && typeof modelObj.inputPerM === 'number') {
+        pipRate.textContent = '$' + modelObj.inputPerM.toFixed(2) + '/1M';
+      }
+    }
+
+    function togglePipMode() {
+      const isPip = document.body.classList.toggle('pip-mode');
+      try { localStorage.setItem('agy_pip_mode', isPip ? '1' : '0'); } catch {}
+      updatePipWidgetMetrics();
+    }
+
+    async function autoCalibrateAll() {
+      const btn = document.getElementById('btnAutoCalibrate');
+      if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Calibrating...';
+      }
+      try {
+        const res = await fetch('/api/config/calibrate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ apply: true })
+        });
+        const data = await res.json();
+        if (data.success) {
+          if (!cachedMetrics.config) cachedMetrics.config = {};
+          cachedMetrics.config.skillWeights = data.config?.skillWeights || data.skillWeights;
+          cachedMetrics.calibration = data;
+          renderSkillsCatalog();
+        }
+      } catch (err) {
+        alert('Auto-calibration failed: ' + err.message);
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.innerHTML = '⚡ Auto-Calibrate All';
+        }
+      }
+    }
+
+    async function applySingleCalibration(name, recVal) {
+      onSkillWeightInput(name, recVal);
+      await updateSkillWeight(name, recVal);
+      fetchMetrics();
+    }
+
+    let sseSource = null;
+    let pollingTimer = null;
+
+    function startPollingFallback() {
+      if (pollingTimer) return;
+      pollingTimer = setInterval(fetchMetrics, 2000);
+    }
+
+    function stopPollingFallback() {
+      if (pollingTimer) {
+        clearInterval(pollingTimer);
+        pollingTimer = null;
+      }
+    }
+
+    function updateSseStatus(connected) {
+      const badge = document.getElementById('sseLiveBadge');
+      if (badge) {
+        if (connected) {
+          badge.className = 'badge bg-success bg-opacity-15 text-success border border-success border-opacity-25 mono small py-1 px-2 d-flex align-items-center gap-1';
+          badge.innerHTML = '<span class="pulse-dot me-1"></span> Live SSE';
+          badge.title = 'Real-time Server-Sent Events stream active';
+        } else {
+          badge.className = 'badge bg-warning bg-opacity-15 text-warning border border-warning border-opacity-25 mono small py-1 px-2 d-flex align-items-center gap-1';
+          badge.innerHTML = '<span class="me-1">⚠️</span> Polling (2s)';
+          badge.title = 'SSE stream disconnected. Polling fallback active.';
+        }
+      }
+      const pipStatus = document.getElementById('pipSseStatus');
+      if (pipStatus) {
+        pipStatus.textContent = connected ? 'LIVE' : 'POLL';
+        pipStatus.className = 'badge mono x-small ' + (connected ? 'bg-success bg-opacity-25 text-success' : 'bg-warning bg-opacity-25 text-warning');
+      }
+    }
+
+    function initSSE() {
+      if (!window.EventSource) {
+        startPollingFallback();
+        updateSseStatus(false);
+        return;
+      }
+
+      try {
+        sseSource = new EventSource('/api/events');
+
+        sseSource.onopen = () => {
+          stopPollingFallback();
+          updateSseStatus(true);
+        };
+
+        sseSource.addEventListener('init', (e) => {
+          try {
+            const data = JSON.parse(e.data);
+            if (data.metrics) {
+              cachedMetrics = data.metrics;
+              cachedSkills = data.metrics.skills || [];
+              cachedModels = data.metrics.models || [];
+              populateModelSelects(cachedModels);
+              updateDashboard(data.metrics);
+              renderTrendChart(data.metrics.trendLogs || []);
+              syncConfigForm(data.metrics.config);
+              renderSkillsCatalog();
+            }
+            const activeModel = data.discoveredActiveModel || data.model;
+            if (activeModel) syncModelUI(activeModel);
+            updatePipWidgetMetrics();
+          } catch (err) {
+            console.error('SSE init error:', err);
+          }
+        });
+
+        sseSource.addEventListener('model_switch', (e) => {
+          try {
+            const data = JSON.parse(e.data);
+            const activeModel = data.discoveredActiveModel || data.model;
+            if (activeModel) {
+              if (cachedMetrics) cachedMetrics.discoveredActiveModel = activeModel;
+              syncModelUI(activeModel);
+              updatePipWidgetMetrics();
+            }
+          } catch (err) {
+            console.error('SSE model_switch error:', err);
+          }
+        });
+
+        sseSource.addEventListener('telemetry', (e) => {
+          try {
+            const data = JSON.parse(e.data);
+            if (data.metrics) {
+              cachedMetrics = data.metrics;
+              cachedSkills = data.metrics.skills || [];
+              cachedModels = data.metrics.models || [];
+              populateModelSelects(cachedModels);
+              updateDashboard(data.metrics);
+              renderTrendChart(data.metrics.trendLogs || []);
+              syncConfigForm(data.metrics.config);
+              renderSkillsCatalog();
+              updatePipWidgetMetrics();
+            }
+          } catch (err) {
+            console.error('SSE telemetry error:', err);
+          }
+        });
+
+        sseSource.onmessage = (e) => {
+          try {
+            const data = JSON.parse(e.data);
+            if (data.metrics) updateDashboard(data.metrics);
+            const activeModel = data.discoveredActiveModel || data.model;
+            if (activeModel) syncModelUI(activeModel);
+            updatePipWidgetMetrics();
+          } catch {}
+        };
+
+        sseSource.onerror = () => {
+          updateSseStatus(false);
+          startPollingFallback();
+        };
+      } catch {
+        updateSseStatus(false);
+        startPollingFallback();
+      }
+    }
+
+    // Restore PiP mode on load if saved in localStorage
+    try {
+      if (localStorage.getItem('agy_pip_mode') === '1') {
+        document.body.classList.add('pip-mode');
+      }
+    } catch {}
+
+    // Auto-fetch on page load and start SSE stream with polling fallback
+    fetchMetrics().then(() => {
+      initSSE();
+    }).catch(() => {
+      initSSE();
+    });
   </script>
 </body>
 </html>`;
