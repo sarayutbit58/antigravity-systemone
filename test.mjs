@@ -12,6 +12,9 @@ import {
   restoreSkillsConfig,
   queryJevRouter,
   enrichShortPrompt,
+  inferEffortLevel,
+  scoreToEffort,
+  injectEffortArg,
 } from "./index.mjs";
 
 import { alreadyLogged } from "./hook.mjs";
@@ -175,6 +178,42 @@ console.log("🧪 Running agy-smart verification tests (live-only mode)...\n");
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
+}
+
+// ─── Test 9: Auto --effort allocation via TypeSafe Score primitive ──────────
+{
+  // 1. Threshold mapping unit check
+  assert.equal(scoreToEffort(0.2), "low");
+  assert.equal(scoreToEffort(0.69), "low");
+  assert.equal(scoreToEffort(0.7), "medium");
+  assert.equal(scoreToEffort(1.49), "medium");
+  assert.equal(scoreToEffort(1.5), "high");
+  assert.equal(scoreToEffort(2.0), "high");
+
+  // 2. Offline fallback (no API key)
+  const offline = await inferEffortLevel("what is today's date", { apiKey: "" });
+  assert.equal(offline.effort, "medium");
+  assert.equal(offline.error, "TYPESAFE_API_KEY not set");
+
+  // 3. Structure / fake key check
+  const fake = await inferEffortLevel("build distributed database", { apiKey: "fake-key", timeoutMs: 50 });
+  assert.equal(fake.effort, "medium");
+  assert.ok(fake.error, "Should handle error and fallback to medium");
+
+  console.log("  ✓ inferEffortLevel & scoreToEffort (TypeSafe Score primitive)");
+}
+
+// ─── Test 10: injectEffortArg auto-injection & user preference preservation ─
+{
+  // Case 1: Injects effort when missing
+  assert.deepEqual(injectEffortArg(["-p", "hello"], "high"), ["-p", "hello", "--effort", "high"]);
+  assert.deepEqual(injectEffortArg(["-i", "prompt"], "low"), ["-i", "prompt", "--effort", "low"]);
+
+  // Case 2: Preserves user explicit --effort
+  assert.deepEqual(injectEffortArg(["-p", "hello", "--effort", "low"], "high"), ["-p", "hello", "--effort", "low"]);
+  assert.deepEqual(injectEffortArg(["-p", "hello", "--effort=medium"], "high"), ["-p", "hello", "--effort=medium"]);
+
+  console.log("  ✓ injectEffortArg (auto-injection & explicit flag preservation)");
 }
 
 console.log("\n🎉 All agy-smart tests passed (live-only mode)!");
