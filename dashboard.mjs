@@ -550,7 +550,7 @@ function renderDashboardHtml() {
               <label class="form-label small text-secondary fw-bold text-uppercase">Presets</label>
               <div class="d-flex gap-2">
                 <button type="button" class="btn btn-sm btn-outline-info" onclick="applyPreset(0.35, 7, 2000)">⚡ Aggressive</button>
-                <button type="button" class="btn btn-sm btn-outline-primary active" onclick="applyPreset(0.50, 5, 2000)">🎯 Balanced</button>
+                <button type="button" class="btn btn-sm btn-outline-primary" onclick="applyPreset(0.50, 5, 2000)">🎯 Balanced</button>
                 <button type="button" class="btn btn-sm btn-outline-warning" onclick="applyPreset(0.65, 3, 2000)">🛡️ Strict</button>
               </div>
             </div>
@@ -559,7 +559,7 @@ function renderDashboardHtml() {
             <div class="mb-3">
               <div class="d-flex justify-content-between align-items-center mb-1">
                 <label for="cfgThreshold" class="form-label small text-secondary fw-bold mb-0">PROBABILITY THRESHOLD</label>
-                <span id="cfgThresholdVal" class="badge bg-primary mono">0.50</span>
+                <span id="cfgThresholdVal" class="badge bg-primary mono">--</span>
               </div>
               <input type="range" class="form-range" id="cfgThreshold" min="0.10" max="0.90" step="0.05" value="0.50" oninput="document.getElementById('cfgThresholdVal').textContent=Number(this.value).toFixed(2)">
               <div class="d-flex justify-content-between text-secondary x-small mono">
