@@ -2100,15 +2100,15 @@ function renderDashboardHtml() {
           badge.innerHTML = '<span class="pulse-dot me-1"></span> Live SSE';
           badge.title = 'Real-time Server-Sent Events stream active';
         } else {
-          badge.className = 'badge bg-warning bg-opacity-15 text-warning border border-warning border-opacity-25 mono small py-1 px-2 d-flex align-items-center gap-1';
-          badge.innerHTML = '<span class="me-1">⚠️</span> Polling (2s)';
+          badge.className = 'badge bg-info bg-opacity-15 text-info border border-info border-opacity-40 mono small py-1 px-2 d-flex align-items-center gap-1';
+          badge.innerHTML = '<span class="me-1 text-warning">⚠️</span> <span class="text-info fw-bold">Polling (2s)</span>';
           badge.title = 'SSE stream disconnected. Polling fallback active.';
         }
       }
       const pipStatus = document.getElementById('pipSseStatus');
       if (pipStatus) {
         pipStatus.textContent = connected ? 'LIVE' : 'POLL';
-        pipStatus.className = 'badge mono x-small ' + (connected ? 'bg-success bg-opacity-25 text-success' : 'bg-warning bg-opacity-25 text-warning');
+        pipStatus.className = 'badge mono x-small ' + (connected ? 'bg-success bg-opacity-25 text-success' : 'bg-info bg-opacity-25 text-info border border-info border-opacity-25 fw-bold');
       }
     }
 
