@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { scanSkills, queryJevRouter, inferEffortLevel, stripSlashCommands, extractModel, loadConfig, loadEnv } from "./index.mjs";
-import { saveTelemetry } from "./dashboard.mjs";
+import { saveTelemetry, extractModelFromSettings } from "./dashboard.mjs";
 
 // ponytail: PreInvocation fires on every model invocation (each tool-call cycle),
 // not once per user message. Dedup by checking if recent telemetry already has
@@ -18,6 +18,21 @@ export function alreadyLogged(prompt, stepIndex, telemetryPath = TELEMETRY_PATH)
     }
     return arr[0]?.prompt === prompt;
   } catch { return false; }
+}
+
+export function extractTranscriptModel(lines) {
+  if (!Array.isArray(lines)) return null;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    if (!line || typeof line !== "string" || !/model\s*selection/i.test(line)) continue;
+    let step = null;
+    try { step = JSON.parse(line); } catch { step = null; }
+    if (step?.source === "MODEL") continue;
+    const content = (step && typeof step.content === "string") ? step.content : line;
+    const m = extractModelFromSettings(content);
+    if (m) return m;
+  }
+  return null;
 }
 
 loadEnv();
@@ -47,32 +62,39 @@ async function main() {
       let transcriptModel = "";
 
       for (let i = lines.length - 1; i >= 0; i--) {
-        try {
-          const step = JSON.parse(lines[i]);
-          // Check for settings changes (e.g. <USER_SETTINGS_CHANGE> Model Selection ... </USER_SETTINGS_CHANGE>)
-          if (!transcriptModel && step.content) {
-            const setMatch = step.content.match(/The user changed setting `Model Selection`.*?to\s+([^.\n]+)/i);
-            if (setMatch) {
-              transcriptModel = setMatch[1].trim();
-            }
-          }
+        const line = lines[i];
+        if (!line || typeof line !== "string") continue;
+        let step = null;
+        try { step = JSON.parse(line); } catch { step = null; }
+        if (step?.source === "MODEL") continue;
 
-          if (step.type === "USER_INPUT" && step.content) {
-            const raw = step.content;
-            // Extract from <USER_REQUEST> if present
-            const m = raw.match(/<USER_REQUEST>([\s\S]*?)<\/USER_REQUEST>/);
-            const rawText = (m ? m[1] : raw).trim();
-            const text = stripSlashCommands(rawText);
-            if (!lastUserPrompt) {
-              lastRawPrompt = rawText;
-              lastUserPrompt = text;
-              lastStepIndex = typeof step.step_index === "number" ? step.step_index : i;
-            } else if (!prevUserPrompt && text !== lastUserPrompt) {
-              prevUserPrompt = text;
-              if (transcriptModel) break;
+        // Check for settings changes (e.g. <USER_SETTINGS_CHANGE> Model Selection ... </USER_SETTINGS_CHANGE>)
+        if (!transcriptModel) {
+          const lineContent = (step && typeof step.content === "string") ? step.content : line;
+          if (/model\s*selection/i.test(lineContent)) {
+            const m = extractModelFromSettings(lineContent);
+            if (m) {
+              transcriptModel = m;
+              if (lastUserPrompt && prevUserPrompt) break;
             }
           }
-        } catch { /* skip unparseable line */ }
+        }
+
+        if (step?.type === "USER_INPUT" && step?.content) {
+          const raw = step.content;
+          // Extract from <USER_REQUEST> if present
+          const m = raw.match(/<USER_REQUEST>([\s\S]*?)<\/USER_REQUEST>/);
+          const rawText = (m ? m[1] : raw).trim();
+          const text = stripSlashCommands(rawText);
+          if (!lastUserPrompt) {
+            lastRawPrompt = rawText;
+            lastUserPrompt = text;
+            lastStepIndex = typeof step.step_index === "number" ? step.step_index : i;
+          } else if (!prevUserPrompt && text !== lastUserPrompt) {
+            prevUserPrompt = text;
+            if (transcriptModel) break;
+          }
+        }
       }
 
       if (lastUserPrompt && !alreadyLogged(lastUserPrompt, lastStepIndex)) {
@@ -84,8 +106,9 @@ async function main() {
         ]);
 
         const tokensSaved = (skills.length - result.matchedSkills.length) * 60;
-        const promptModel = extractModel([], lastRawPrompt);
-        const detectedModel = (promptModel !== "gemini-3-8-flash" ? promptModel : "") || transcriptModel || data.modelName || "gemini-3-8-flash";
+        const hasPromptSlash = /^\s*\/(?:model|mode|m)\s+([^\s]+)/i.test(lastRawPrompt);
+        const promptModel = hasPromptSlash ? extractModel([], lastRawPrompt) : "";
+        const detectedModel = promptModel || transcriptModel || data.modelName || "gemini-3-8-flash";
         saveTelemetry({
           id: `ide-${Date.now()}`,
           timestamp: Date.now(),
