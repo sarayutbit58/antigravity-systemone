@@ -106,7 +106,77 @@ export function resolveModelPricing(modelName = "") {
   return { ...MODEL_PRICING_CATALOG[matchedId] };
 }
 
-// ponytail: detect active model in real-time directly from latest Antigravity IDE transcripts
+// ponytail: robustly extract chosen model name from <USER_SETTINGS_CHANGE> across all depths, whitespace & formats
+const SETTING_REGEX = /(?:[\\*_`"']*)Model\s*Selection(?:[\\*_`"']*)\s*(?:from\s+(?:(?!\s+to\s+)[^<])+?\s+to\s+|(?:(?:(?:was|is|has\s+been)\s+)?(?:changed|switched|updated|set)\s+)?to\s+|[:=]|->|=>)\s*([^\r\n<]+)/gi;
+
+function extractFromText(text) {
+  if (!text || !/model\s*selection/i.test(text)) return null;
+  const matches = [...text.matchAll(SETTING_REGEX)];
+  for (let i = matches.length - 1; i >= 0; i--) {
+    const candidate = sanitizeModelCandidate(matches[i][1]);
+    if (candidate) return candidate;
+  }
+  return null;
+}
+
+export function extractModelFromSettings(content) {
+  if (!content || typeof content !== "string") return null;
+  if (!/model\s*selection/i.test(content)) return null;
+
+  // 1. Within <USER_SETTINGS_CHANGE...>...</USER_SETTINGS_CHANGE>, scan blocks in reverse (newest first)
+  const tagMatches = [...content.matchAll(/<USER_SETTINGS_CHANGE[^>]*>([\s\S]*?)<\/USER_SETTINGS_CHANGE>/gi)];
+  if (tagMatches.length > 0) {
+    for (let i = tagMatches.length - 1; i >= 0; i--) {
+      const model = extractFromText(tagMatches[i][1]);
+      if (model) return model;
+    }
+    // If explicit settings change blocks are present, do not leak outside text
+    return null;
+  }
+
+  // 2. Fallback for unclosed <USER_SETTINGS_CHANGE> tag
+  const unclosedIdx = content.search(/<USER_SETTINGS_CHANGE[^>]*>/i);
+  if (unclosedIdx !== -1) {
+    const afterTag = content.slice(unclosedIdx).replace(/^<USER_SETTINGS_CHANGE[^>]*>/i, "");
+    return extractFromText(afterTag);
+  }
+
+  // 3. Fallback for direct outside-tag / line-level inputs
+  return extractFromText(content);
+}
+
+function sanitizeModelCandidate(raw) {
+  let candidate = (raw || "").trim();
+  if (!candidate) return null;
+
+  // 1. If candidate begins with quote, backtick, or markdown delimiter, match until paired closing delimiter
+  const delimitedMatch = candidate.match(/^(\*\*|__|[`"'«“‘\[*])([\s\S]+?)(?:\1|[`"'»”’\]])/);
+  if (delimitedMatch) {
+    candidate = delimitedMatch[2].trim();
+  } else {
+    // 2. Unquoted candidate: stop at end-of-sentence (. followed by space/end, preserving version dots like 3.8/4.6),
+    // comma/semicolon before subsequent setting, or closing quote/delimiter
+    const stopMatch = candidate.match(/^([^`"',;<\r\n]+?)(?=\s*[,;]|\s*\.(?:\s+|$)|[`"']|$)/);
+    if (stopMatch) {
+      candidate = stopMatch[1].trim();
+    }
+  }
+
+  // Strip enclosing quotes, backticks, markdown delimiters, brackets
+  candidate = candidate.replace(/^[\\*_`"'«“‘\[]+|[\\*_`"'»”’\]]+$/g, "").trim();
+
+  // Strip trailing period(s)
+  candidate = candidate.replace(/\.+$/, "").trim();
+
+  // Re-strip enclosing in case period was inside quotes/brackets
+  candidate = candidate.replace(/^[\\*_`"'«“‘\[]+|[\\*_`"'»”’\]]+$/g, "").trim();
+
+  if (candidate.toLowerCase() === "none") return null;
+
+  return candidate || null;
+}
+
+// ponytail: detect active model in real-time directly from latest Antigravity IDE transcripts across all depths
 export function detectActiveModelRealtime(customBrainDir = null) {
   const brainDir = customBrainDir || path.join(os.homedir(), ".gemini", "antigravity-cli", "brain");
   if (!fs.existsSync(brainDir)) return null;
@@ -122,38 +192,41 @@ export function detectActiveModelRealtime(customBrainDir = null) {
       for (const d of entries) {
         if (d.isDirectory()) {
           const standardPath = path.join(brainDir, d.name, ".system_generated", "logs", "transcript.jsonl");
-          if (fs.existsSync(standardPath)) candidateFiles.push(standardPath);
+          if (fs.existsSync(standardPath)) {
+            candidateFiles.push(standardPath);
+          } else {
+            const fullPath = path.join(brainDir, d.name, ".system_generated", "logs", "transcript_full.jsonl");
+            if (fs.existsSync(fullPath)) candidateFiles.push(fullPath);
+          }
           const simplePath = path.join(brainDir, d.name, "transcript.jsonl");
           if (fs.existsSync(simplePath)) candidateFiles.push(simplePath);
         }
       }
     }
 
-    const convs = candidateFiles
-      .map((f) => ({ file: f, mtime: fs.statSync(f).mtimeMs }))
-      .sort((a, b) => b.mtime - a.mtime);
+    const uniqueFiles = [...new Set(candidateFiles)];
+    const convs = [];
+    for (const f of uniqueFiles) {
+      try {
+        const stat = fs.statSync(f);
+        convs.push({ file: f, mtime: stat.mtimeMs });
+      } catch { /* skip missing file */ }
+    }
+    convs.sort((a, b) => b.mtime - a.mtime);
 
-    for (const c of convs.slice(0, 3)) {
+    for (const c of convs.slice(0, 10)) {
       try {
         const lines = fs.readFileSync(c.file, "utf8").trim().split("\n");
-        for (let i = lines.length - 1; i >= Math.max(0, lines.length - 80); i--) {
-          if (!lines[i].trim()) continue;
+        for (let i = lines.length - 1; i >= 0; i--) {
+          const line = lines[i];
+          if (!line.trim()) continue;
+          if (!/model\s*selection/i.test(line)) continue;
           let step;
-          try { step = JSON.parse(lines[i]); } catch { continue; }
-          if (step.type === "USER_INPUT" && typeof step.content === "string") {
-            const marker = "Model Selection";
-            const pos = step.content.indexOf(marker);
-            if (pos !== -1) {
-              const chunk = step.content.slice(pos);
-              const toIdx = chunk.indexOf(" to ");
-              if (toIdx !== -1) {
-                const after = chunk.slice(toIdx + 4);
-                const endIdx = after.indexOf(". No need");
-                const model = (endIdx !== -1 ? after.slice(0, endIdx) : after.split(/[\n<]/)[0]).trim();
-                if (model) return model;
-              }
-            }
-          }
+          try { step = JSON.parse(line); } catch { step = null; }
+          if (step?.source === "MODEL") continue;
+          const content = (step && typeof step.content === "string") ? step.content : line;
+          const model = extractModelFromSettings(content);
+          if (model) return model;
         }
       } catch { /* skip unparseable line */ }
     }
@@ -290,8 +363,10 @@ export function createDashboardServer(options = {}) {
   if (fs.existsSync(brainDir)) {
     try {
       brainWatcher = fs.watch(brainDir, { recursive: true }, () => {
+        if (!brainWatcher) return;
         clearTimeout(brainDebounce);
         brainDebounce = setTimeout(() => {
+          if (!brainWatcher) return;
           const liveModel = detectActiveModelRealtime(brainDir);
           if (liveModel && liveModel !== lastDiscoveredModel) {
             lastDiscoveredModel = liveModel;
@@ -312,9 +387,11 @@ export function createDashboardServer(options = {}) {
   if (fs.existsSync(teleDir)) {
     try {
       telemetryWatcher = fs.watch(teleDir, (eventType, filename) => {
+        if (!telemetryWatcher) return;
         if (!filename || filename.includes("telemetry.json")) {
           clearTimeout(teleDebounce);
           teleDebounce = setTimeout(() => {
+            if (!telemetryWatcher) return;
             const logs = getLogs();
             const skills = scanSkills();
             const metrics = calculateMetrics(logs, skills.length, brainDir);
@@ -627,20 +704,24 @@ export function createDashboardServer(options = {}) {
 
   const origClose = server.close.bind(server);
   server.close = function (cb) {
-    if (brainDebounce) clearTimeout(brainDebounce);
-    if (teleDebounce) clearTimeout(teleDebounce);
+    if (brainDebounce) { clearTimeout(brainDebounce); brainDebounce = null; }
+    if (teleDebounce) { clearTimeout(teleDebounce); teleDebounce = null; }
     if (brainWatcher) {
-      try { brainWatcher.close(); } catch {}
+      const bw = brainWatcher;
       brainWatcher = null;
+      try { bw.close(); } catch {}
     }
     if (telemetryWatcher) {
-      try { telemetryWatcher.close(); } catch {}
+      const tw = telemetryWatcher;
       telemetryWatcher = null;
+      try { tw.close(); } catch {}
     }
     for (const client of sseClients) {
-      try { client.end(); } catch {}
-      try { client.socket?.destroy(); } catch {}
-      try { client.destroy?.(); } catch {}
+      try {
+        if (!client.destroyed) {
+          client.end();
+        }
+      } catch {}
     }
     sseClients.clear();
     if (typeof server.closeAllConnections === "function") {
@@ -651,13 +732,6 @@ export function createDashboardServer(options = {}) {
     }
     return origClose(cb);
   };
-
-  server.on("close", () => {
-    for (const client of sseClients) {
-      try { client.end(); } catch {}
-    }
-    sseClients.clear();
-  });
 
   server.broadcastSSE = localBroadcast;
   server.sseClients = sseClients;
