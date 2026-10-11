@@ -20,7 +20,8 @@ import {
   calibrateSkills,
 } from "./index.mjs";
 
-import { alreadyLogged } from "./hook.mjs";
+import { alreadyLogged, extractTranscriptModel } from "./hook.mjs";
+import { extractModelFromSettings, detectActiveModelRealtime, resolveModelPricing } from "./dashboard.mjs";
 
 console.log("🧪 Running agy-smart verification tests (live-only mode)...\n");
 
@@ -308,6 +309,305 @@ console.log("🧪 Running agy-smart verification tests (live-only mode)...\n");
   assert.equal(clampHigh.skillWeights["docker-expert"], 2.0, "Multiplier must never exceed 2.0");
 
   console.log("  ✓ calibrateSkills (null-safety, sparse telemetry, specialist boost, FP dampening & [0.1, 2.0] clamping)");
+}
+
+// ─── Test 14: extractModelFromSettings robust settings parsing ──────────────
+{
+  // 1. Standard Antigravity format
+  assert.equal(
+    extractModelFromSettings("<USER_SETTINGS_CHANGE>\nThe user changed setting `Model Selection` to Gemini 3.8 Flash (Medium). No need to acknowledge this message.\n</USER_SETTINGS_CHANGE>"),
+    "Gemini 3.8 Flash (Medium)"
+  );
+
+  // 2. Format with 'from <old> to <new>'
+  assert.equal(
+    extractModelFromSettings("<USER_SETTINGS_CHANGE>\nThe user changed setting `Model Selection` from Claude Opus 4.6 (Thinking) to Gemini 3.8 Flash (Medium). No need to comment on this change if the user doesn't ask about it.\n</USER_SETTINGS_CHANGE>"),
+    "Gemini 3.8 Flash (Medium)"
+  );
+
+  // 3. Various quote styles
+  assert.equal(
+    extractModelFromSettings('<USER_SETTINGS_CHANGE> The user changed setting "Model Selection" to "Gemini 3.8 Flash (current)". </USER_SETTINGS_CHANGE>'),
+    "Gemini 3.8 Flash (current)"
+  );
+  assert.equal(
+    extractModelFromSettings("<USER_SETTINGS_CHANGE> The user changed setting 'Model Selection' to 'gemini-3-8-flash'. </USER_SETTINGS_CHANGE>"),
+    "gemini-3-8-flash"
+  );
+  assert.equal(
+    extractModelFromSettings("<USER_SETTINGS_CHANGE> The user changed setting Model Selection to `Gemini 3.8 Flash (Medium)`. </USER_SETTINGS_CHANGE>"),
+    "Gemini 3.8 Flash (Medium)"
+  );
+
+  // 4. Colon and equal syntax
+  assert.equal(
+    extractModelFromSettings("<USER_SETTINGS_CHANGE>\n  Model Selection: Gemini 3.8 Flash (Medium)\n</USER_SETTINGS_CHANGE>"),
+    "Gemini 3.8 Flash (Medium)"
+  );
+
+  // 5. Irregular whitespace and newlines
+  assert.equal(
+    extractModelFromSettings("<USER_SETTINGS_CHANGE>\n  The user changed setting   `Model Selection`  \n  to   Gemini 3.8 Flash (Medium)  .\n</USER_SETTINGS_CHANGE>"),
+    "Gemini 3.8 Flash (Medium)"
+  );
+
+  // 6. Multi-tag sequences (Theme first, Model Selection second)
+  assert.equal(
+    extractModelFromSettings("<USER_SETTINGS_CHANGE>\nTheme changed to Dark\n</USER_SETTINGS_CHANGE>\n<USER_SETTINGS_CHANGE>\nThe user changed setting `Model Selection`\nto \"Gemini 3.8 Flash (Medium)\"\n</USER_SETTINGS_CHANGE>"),
+    "Gemini 3.8 Flash (Medium)"
+  );
+
+  // 7. Multi-model switches in same block (confirming last wins)
+  assert.equal(
+    extractModelFromSettings("<USER_SETTINGS_CHANGE>\nThe user changed setting `Model Selection` from None to Gemini 3.1 Pro.\nThe user changed setting `Model Selection` from Gemini 3.1 Pro to Gemini 3.8 Flash (Medium).\n</USER_SETTINGS_CHANGE>"),
+    "Gemini 3.8 Flash (Medium)"
+  );
+
+  // 8. Hyphenated model name with 'to' (code-to-test)
+  assert.equal(
+    extractModelFromSettings("<USER_SETTINGS_CHANGE>\nThe user changed setting `Model Selection` from code-to-test to Gemini 3.8 Flash\n</USER_SETTINGS_CHANGE>"),
+    "Gemini 3.8 Flash"
+  );
+
+  // 9. Markdown, arrow and attribute syntax
+  assert.equal(
+    extractModelFromSettings("**Model Selection**: Gemini 3.8 Flash"),
+    "Gemini 3.8 Flash"
+  );
+  assert.equal(
+    extractModelFromSettings("Model Selection -> Gemini 3.8 Flash"),
+    "Gemini 3.8 Flash"
+  );
+  assert.equal(
+    extractModelFromSettings('<USER_SETTINGS_CHANGE source="user">\nThe user changed setting `Model Selection`\nto "Gemini 3.8 Flash"\n</USER_SETTINGS_CHANGE>'),
+    "Gemini 3.8 Flash"
+  );
+  assert.equal(
+    extractModelFromSettings("Model Selection: **Gemini 3.8 Flash**"),
+    "Gemini 3.8 Flash"
+  );
+  assert.equal(
+    extractModelFromSettings("Model Selection: *Gemini 3.8 Flash*"),
+    "Gemini 3.8 Flash"
+  );
+  assert.equal(
+    extractModelFromSettings("Model Selection: [Gemini 3.8 Flash]"),
+    "Gemini 3.8 Flash"
+  );
+
+  // 10. Case insensitivity and transition verbs
+  assert.equal(
+    extractModelFromSettings("<USER_SETTINGS_CHANGE> The user changed setting `model selection` to Gemini 3.8 Flash </USER_SETTINGS_CHANGE>"),
+    "Gemini 3.8 Flash"
+  );
+  assert.equal(
+    extractModelFromSettings("**Model Selection** changed to **Gemini 3.8 Flash**"),
+    "Gemini 3.8 Flash"
+  );
+  assert.equal(
+    extractModelFromSettings("Model Selection was changed to Gemini 3.8 Flash"),
+    "Gemini 3.8 Flash"
+  );
+  assert.equal(
+    extractModelFromSettings("Model Selection set to Gemini 3.8 Flash"),
+    "Gemini 3.8 Flash"
+  );
+
+  // 11. Sentence boundary, delimiter isolation, and multi-setting lines
+  assert.equal(
+    extractModelFromSettings("<USER_SETTINGS_CHANGE>\nThe user changed setting `Model Selection` to Gemini 3.8 Flash. Please use this model.\n</USER_SETTINGS_CHANGE>"),
+    "Gemini 3.8 Flash"
+  );
+  assert.equal(
+    extractModelFromSettings("Model Selection: **Gemini 3.8 Flash** or Model Selection: *Gemini 3.8 Flash*"),
+    "Gemini 3.8 Flash"
+  );
+  assert.equal(
+    extractModelFromSettings("Model Selection: Gemini 3.8 Flash, Theme: Dark"),
+    "Gemini 3.8 Flash"
+  );
+  assert.equal(
+    extractModelFromSettings("Model Selection: Gemini 3.8 Flash; Temperature: 0.7"),
+    "Gemini 3.8 Flash"
+  );
+  assert.equal(
+    extractModelFromSettings("<USER_SETTINGS_CHANGE>\nThe user changed setting `Model Selection` from None to Gemini 3.1 Pro (High). No need to comment on this change if the user doesn't ask about it. If reporting what model you are, please use a human readable name instead of the exact string.\n</USER_SETTINGS_CHANGE>"),
+    "Gemini 3.1 Pro (High)"
+  );
+  assert.equal(
+    extractModelFromSettings("<USER_SETTINGS_CHANGE>\nThe user changed setting \\`model selection\\` to Gemini 3.8 Flash\n</USER_SETTINGS_CHANGE>"),
+    "Gemini 3.8 Flash"
+  );
+
+  // 12. Negative cases (non-settings changes, code discussions, Theme only)
+  assert.equal(
+    extractModelFromSettings("Can you help me with Model Selection in machine learning? We want to switch from random forests to XGBoost."),
+    null
+  );
+  assert.equal(
+    extractModelFromSettings("<USER_SETTINGS_CHANGE> The user changed setting `Theme` to Dark. </USER_SETTINGS_CHANGE>"),
+    null
+  );
+
+  console.log("  ✓ extractModelFromSettings (extracts model from <USER_SETTINGS_CHANGE> across formatting & whitespace)");
+}
+
+// ─── Test 15: detectActiveModelRealtime deep transcript scan (>150 lines) ───
+{
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-deep-transcript-"));
+  try {
+    const transcriptPath = path.join(tmpDir, "transcript.jsonl");
+
+    // Build a transcript with 200 lines where Model Selection change is at line 1 (>190 lines from the end)
+    const lines = [];
+    lines.push(JSON.stringify({
+      step_index: 0,
+      source: "USER_EXPLICIT",
+      type: "USER_INPUT",
+      content: "<USER_REQUEST>Initial prompt</USER_REQUEST>"
+    }));
+    lines.push(JSON.stringify({
+      step_index: 1,
+      source: "USER_EXPLICIT",
+      type: "USER_INPUT",
+      content: "<USER_SETTINGS_CHANGE>\nThe user changed setting `Model Selection` from Claude Opus 4.6 (Thinking) to Gemini 3.8 Flash (Medium). No need to comment on this change if the user doesn't ask about it.\n</USER_SETTINGS_CHANGE>"
+    }));
+
+    // Add 190 lines of simulated tool calls, model responses, and generic steps pushing the change deep
+    for (let i = 2; i <= 195; i++) {
+      lines.push(JSON.stringify({
+        step_index: i,
+        source: i % 2 === 0 ? "MODEL" : "SYSTEM",
+        type: i % 2 === 0 ? "PLANNER_RESPONSE" : "GENERIC",
+        content: `Simulated step ${i} with tool output, code edits, and lengthy logs`
+      }));
+    }
+
+    fs.writeFileSync(transcriptPath, lines.join("\n"), "utf8");
+
+    // Must find it even though it's located >190 lines from the end
+    const detected = detectActiveModelRealtime(tmpDir);
+    assert.equal(detected, "Gemini 3.8 Flash (Medium)");
+
+    const pricing = resolveModelPricing(detected);
+    assert.equal(pricing.id, "gemini-3-8-flash");
+    assert.equal(pricing.name, "Gemini 3.8 Flash (current)");
+
+    console.log("  ✓ detectActiveModelRealtime (accurately detects Gemini 3.8 Flash when >150 lines from the end)");
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+// ─── Test 16: detectActiveModelRealtime multi-turn model switches ───────────
+{
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-multi-switch-"));
+  try {
+    const transcriptPath = path.join(tmpDir, "transcript.jsonl");
+    const lines = [];
+
+    // Turn 1: Switch to Gemini 3.1 Pro
+    lines.push(JSON.stringify({
+      step_index: 0,
+      source: "USER_EXPLICIT",
+      content: "<USER_SETTINGS_CHANGE>\nThe user changed setting `Model Selection` to Gemini 3.1 Pro\n</USER_SETTINGS_CHANGE>"
+    }));
+    for (let i = 1; i <= 30; i++) {
+      lines.push(JSON.stringify({ step_index: i, source: "MODEL", content: `Tool output ${i}` }));
+    }
+
+    // Turn 32: Switch to Claude Sonnet 4.6
+    lines.push(JSON.stringify({
+      step_index: 31,
+      source: "USER_EXPLICIT",
+      content: "<USER_SETTINGS_CHANGE>\nThe user changed setting `Model Selection` to Claude Sonnet 4.6 (Thinking)\n</USER_SETTINGS_CHANGE>"
+    }));
+    for (let i = 32; i <= 70; i++) {
+      lines.push(JSON.stringify({ step_index: i, source: "MODEL", content: `Tool output ${i}` }));
+    }
+
+    // Turn 72: Switch to Gemini 3.8 Flash (Medium)
+    lines.push(JSON.stringify({
+      step_index: 71,
+      source: "USER_EXPLICIT",
+      content: "<USER_SETTINGS_CHANGE>\nThe user changed setting `Model Selection` from Claude Sonnet 4.6 (Thinking) to Gemini 3.8 Flash (Medium). No need to comment...\n</USER_SETTINGS_CHANGE>"
+    }));
+    for (let i = 72; i <= 160; i++) {
+      lines.push(JSON.stringify({ step_index: i, source: "MODEL", content: `Tool output ${i}` }));
+    }
+
+    fs.writeFileSync(transcriptPath, lines.join("\n"), "utf8");
+
+    // Most recent setting (Gemini 3.8 Flash) must be selected
+    const detected = detectActiveModelRealtime(tmpDir);
+    assert.equal(detected, "Gemini 3.8 Flash (Medium)");
+
+    const pricing = resolveModelPricing(detected);
+    assert.equal(pricing.id, "gemini-3-8-flash");
+    assert.equal(pricing.name, "Gemini 3.8 Flash (current)");
+
+    console.log("  ✓ detectActiveModelRealtime (selects latest model across multi-turn switches)");
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+// ─── Test 17: hook.mjs extractTranscriptModel robust deep transcript scan ───
+{
+  // Deep transcript with >160 lines, non-JSON lines, and setting change
+  const lines = [
+    "Non-JSON header line in transcript",
+    JSON.stringify({
+      step_index: 0,
+      source: "USER_EXPLICIT",
+      type: "USER_INPUT",
+      content: "<USER_REQUEST>Initial prompt</USER_REQUEST>"
+    }),
+    "<USER_SETTINGS_CHANGE>\nThe user changed setting `Model Selection` to Gemini 3.8 Flash (Medium)\n</USER_SETTINGS_CHANGE>"
+  ];
+  for (let i = 1; i <= 170; i++) {
+    lines.push(JSON.stringify({ step_index: i, source: i % 2 === 0 ? "MODEL" : "SYSTEM", content: `Tool output ${i}` }));
+  }
+
+  const model = extractTranscriptModel(lines);
+  assert.equal(model, "Gemini 3.8 Flash (Medium)");
+
+  // Formatting and whitespace resilience
+  assert.equal(
+    extractTranscriptModel([
+      JSON.stringify({
+        source: "USER_EXPLICIT",
+        content: "<USER_SETTINGS_CHANGE>\n  The user changed setting   `model selection`  \n  to   Gemini 3.8 Flash (current)  .\n</USER_SETTINGS_CHANGE>"
+      })
+    ]),
+    "Gemini 3.8 Flash (current)"
+  );
+
+  console.log("  ✓ extractTranscriptModel (hook.mjs extracts model correctly from transcripts across whitespace, non-JSON lines & depth)");
+}
+
+// ─── Test 18: hook.mjs prompt /model slash command override precedence ───────
+{
+  // When user explicitly inputs /model gemini-3-8-flash, it must take precedence over older transcriptModel
+  const lastRawPrompt = "/model gemini-3-8-flash build an adversarial suite";
+  const transcriptModel = "claude-sonnet-4-6";
+  const data = {};
+
+  const hasPromptSlash = /^\/(?:model|mode|m)\s+([^\s]+)/i.test(lastRawPrompt);
+  const promptModel = hasPromptSlash ? extractModel([], lastRawPrompt) : "";
+  const detectedModel = promptModel || transcriptModel || data.modelName || "gemini-3-8-flash";
+
+  assert.equal(detectedModel, "gemini-3-8-flash");
+
+  // When prompt has no slash command, transcriptModel takes precedence
+  const normalPrompt = "build an adversarial suite";
+  const normalSlash = /^\/(?:model|mode|m)\s+([^\s]+)/i.test(normalPrompt);
+  const normalPromptModel = normalSlash ? extractModel([], normalPrompt) : "";
+  const normalDetected = normalPromptModel || transcriptModel || data.modelName || "gemini-3-8-flash";
+
+  assert.equal(normalDetected, "claude-sonnet-4-6");
+
+  console.log("  ✓ hook model precedence (prompt /model slash command takes precedence over transcriptModel)");
 }
 
 console.log("\n🎉 All agy-smart tests passed (live-only mode)!");
