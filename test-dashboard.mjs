@@ -1,11 +1,18 @@
 import assert from "node:assert/strict";
 import * as http from "node:http";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import * as os from "node:os";
 import { createDashboardServer } from "./dashboard.mjs";
 import { loadConfig } from "./index.mjs";
 
 console.log("🧪 Running agy-smart dashboard API verification tests...\n");
 
-const server = createDashboardServer();
+const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-smart-test-dash-"));
+const testTelemetryPath = path.join(tmpDir, "telemetry.json");
+fs.writeFileSync(testTelemetryPath, JSON.stringify([], null, 2), "utf8");
+
+const server = createDashboardServer({ telemetryPath: testTelemetryPath });
 
 server.listen(0, async () => {
   const TEST_PORT = server.address().port;
@@ -205,5 +212,6 @@ server.listen(0, async () => {
     process.exit(1);
   } finally {
     server.close();
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
   }
 });

@@ -78,7 +78,7 @@ export function saveTelemetry(entry, customPath = null) {
 }
 
 export const MODEL_PRICING_CATALOG = {
-  "gemini-3-8-flash": { id: "gemini-3-8-flash", name: "Gemini 3.8 Flash (current)", provider: "Google", inputPerM: 0.15, outputPerM: 0.60 },
+  "gemini-3-8-flash": { id: "gemini-3-8-flash", name: "Gemini 3.8 Flash", provider: "Google", inputPerM: 0.15, outputPerM: 0.60 },
   "gemini-3-7-flash": { id: "gemini-3-7-flash", name: "Gemini 3.7 Flash", provider: "Google", inputPerM: 0.15, outputPerM: 0.60 },
   "gemini-3-6-flash": { id: "gemini-3-6-flash", name: "Gemini 3.6 Flash", provider: "Google", inputPerM: 0.10, outputPerM: 0.40 },
   "gemini-3-1-pro":   { id: "gemini-3-1-pro", name: "Gemini 3.1 Pro", provider: "Google", inputPerM: 1.25, outputPerM: 5.00 },
@@ -103,7 +103,14 @@ export function resolveModelPricing(modelName = "") {
     matchedId = "gemini-3-8-flash";
   }
 
-  return { ...MODEL_PRICING_CATALOG[matchedId] };
+  const base = MODEL_PRICING_CATALOG[matchedId];
+  // Preserve human-readable model name if provided (e.g. "Gemini 3.8 Flash (High)")
+  const rawClean = (modelName || "").trim();
+  const displayName = (rawClean && rawClean.length > 3 && !rawClean.startsWith("cli-") && rawClean !== matchedId)
+    ? rawClean
+    : base.name;
+
+  return { ...base, name: displayName };
 }
 
 // ponytail: robustly extract chosen model name from <USER_SETTINGS_CHANGE> across all depths, whitespace & formats
@@ -176,62 +183,97 @@ function sanitizeModelCandidate(raw) {
   return candidate || null;
 }
 
-// ponytail: detect active model in real-time directly from latest Antigravity IDE transcripts across all depths
+// ponytail: detect active model in real-time directly from latest Antigravity IDE transcripts and settings.json across all depths
 export function detectActiveModelRealtime(customBrainDir = null) {
-  const brainDir = customBrainDir || path.join(os.homedir(), ".gemini", "antigravity-cli", "brain");
-  if (!fs.existsSync(brainDir)) return null;
-  try {
-    const candidateFiles = [];
-    if (fs.statSync(brainDir).isFile()) {
-      candidateFiles.push(brainDir);
-    } else {
-      const direct = path.join(brainDir, "transcript.jsonl");
-      if (fs.existsSync(direct)) candidateFiles.push(direct);
-
-      const entries = fs.readdirSync(brainDir, { withFileTypes: true });
-      for (const d of entries) {
-        if (d.isDirectory()) {
-          const standardPath = path.join(brainDir, d.name, ".system_generated", "logs", "transcript.jsonl");
-          if (fs.existsSync(standardPath)) {
-            candidateFiles.push(standardPath);
-          } else {
-            const fullPath = path.join(brainDir, d.name, ".system_generated", "logs", "transcript_full.jsonl");
-            if (fs.existsSync(fullPath)) candidateFiles.push(fullPath);
+  let settingsModel = null;
+  let settingsMtime = 0;
+  for (const p of [
+    path.join(os.homedir(), ".gemini", "antigravity-cli", "settings.json"),
+    path.join(os.homedir(), ".gemini", "settings.json"),
+    path.join(os.homedir(), ".gemini", "antigravity", "settings.json"),
+    path.join(os.homedir(), ".gemini", "antigravity-ide", "settings.json"),
+  ]) {
+    if (fs.existsSync(p)) {
+      try {
+        const stat = fs.statSync(p);
+        const json = JSON.parse(fs.readFileSync(p, "utf8"));
+        if (json.model && typeof json.model === "string" && json.model.toLowerCase() !== "none") {
+          if (stat.mtimeMs > settingsMtime) {
+            settingsModel = json.model.trim();
+            settingsMtime = stat.mtimeMs;
           }
-          const simplePath = path.join(brainDir, d.name, "transcript.jsonl");
-          if (fs.existsSync(simplePath)) candidateFiles.push(simplePath);
+        }
+      } catch { /* ignore */ }
+    }
+  }
+
+  let transcriptModel = null;
+  let transcriptMtime = 0;
+  const brainDir = customBrainDir || path.join(os.homedir(), ".gemini", "antigravity-cli", "brain");
+  if (fs.existsSync(brainDir)) {
+    try {
+      const candidateFiles = [];
+      if (fs.statSync(brainDir).isFile()) {
+        candidateFiles.push(brainDir);
+      } else {
+        const direct = path.join(brainDir, "transcript.jsonl");
+        if (fs.existsSync(direct)) candidateFiles.push(direct);
+
+        const entries = fs.readdirSync(brainDir, { withFileTypes: true });
+        for (const d of entries) {
+          if (d.isDirectory()) {
+            const standardPath = path.join(brainDir, d.name, ".system_generated", "logs", "transcript.jsonl");
+            if (fs.existsSync(standardPath)) {
+              candidateFiles.push(standardPath);
+            } else {
+              const fullPath = path.join(brainDir, d.name, ".system_generated", "logs", "transcript_full.jsonl");
+              if (fs.existsSync(fullPath)) candidateFiles.push(fullPath);
+            }
+            const simplePath = path.join(brainDir, d.name, "transcript.jsonl");
+            if (fs.existsSync(simplePath)) candidateFiles.push(simplePath);
+          }
         }
       }
-    }
 
-    const uniqueFiles = [...new Set(candidateFiles)];
-    const convs = [];
-    for (const f of uniqueFiles) {
-      try {
-        const stat = fs.statSync(f);
-        convs.push({ file: f, mtime: stat.mtimeMs });
-      } catch { /* skip missing file */ }
-    }
-    convs.sort((a, b) => b.mtime - a.mtime);
+      const uniqueFiles = [...new Set(candidateFiles)];
+      const convs = [];
+      for (const f of uniqueFiles) {
+        try {
+          const stat = fs.statSync(f);
+          convs.push({ file: f, mtime: stat.mtimeMs });
+        } catch { /* skip missing file */ }
+      }
+      convs.sort((a, b) => b.mtime - a.mtime);
 
-    for (const c of convs.slice(0, 10)) {
-      try {
-        const lines = fs.readFileSync(c.file, "utf8").trim().split("\n");
-        for (let i = lines.length - 1; i >= 0; i--) {
-          const line = lines[i];
-          if (!line.trim()) continue;
-          if (!/model\s*selection/i.test(line)) continue;
-          let step;
-          try { step = JSON.parse(line); } catch { step = null; }
-          if (step?.source === "MODEL") continue;
-          const content = (step && typeof step.content === "string") ? step.content : line;
-          const model = extractModelFromSettings(content);
-          if (model) return model;
-        }
-      } catch { /* skip unparseable line */ }
-    }
-  } catch { /* ignore */ }
-  return null;
+      for (const c of convs.slice(0, 10)) {
+        try {
+          const lines = fs.readFileSync(c.file, "utf8").trim().split("\n");
+          for (let i = lines.length - 1; i >= 0; i--) {
+            const line = lines[i];
+            if (!line.trim()) continue;
+            if (!/model\s*selection/i.test(line)) continue;
+            let step;
+            try { step = JSON.parse(line); } catch { step = null; }
+            if (step?.source === "MODEL") continue;
+            const content = (step && typeof step.content === "string") ? step.content : line;
+            const model = extractModelFromSettings(content);
+            if (model) {
+              transcriptModel = model;
+              transcriptMtime = c.mtime;
+              break;
+            }
+          }
+          if (transcriptModel) break;
+        } catch { /* skip unparseable line */ }
+      }
+    } catch { /* ignore */ }
+  }
+
+  // Prioritize whichever was modified more recently
+  if (transcriptModel && settingsModel) {
+    return transcriptMtime >= settingsMtime ? transcriptModel : settingsModel;
+  }
+  return transcriptModel || settingsModel || null;
 }
 
 function calculateMetrics(logs, totalSkills = 54, customBrainDir = null) {
@@ -1861,7 +1903,7 @@ function renderDashboardHtml() {
           const timeStr = d.toLocaleTimeString();
           let skillsHtml = '';
           if (l.matchedSkills && l.matchedSkills.length > 0) {
-            skillsHtml = l.matchedSkills.map(s => \`<span class="badge badge-skill me-1 mb-1">\${s}</span>\`).join('');
+            skillsHtml = l.matchedSkills.map(s => \`<span class="badge badge-skill me-1 mb-1">\${s}</span>\`).join(' ');
           } else {
             skillsHtml = '<span class="badge badge-general">General (0 skills)</span>';
           }
@@ -1947,7 +1989,7 @@ function renderDashboardHtml() {
 
         const skillsList = document.getElementById('liveSkillsList');
         if (data.matchedSkills && data.matchedSkills.length > 0) {
-          skillsList.innerHTML = data.matchedSkills.map(s => \`<span class="badge badge-skill me-1 mb-1">\${s}</span>\`).join('');
+          skillsList.innerHTML = data.matchedSkills.map(s => \`<span class="badge badge-skill me-1 mb-1">\${s}</span>\`).join(' ');
         } else {
           skillsList.innerHTML = '<span class="badge badge-general">General Mode (Zero tokens wasted)</span>';
         }
@@ -2259,7 +2301,15 @@ export function startDashboardWithFallback(startPort = PORT) {
 
 // Auto-run if executed directly
 const currentFilePath = new URL(import.meta.url).pathname;
-const invokedPath = process.argv[1]?.replace(/\\/g, "/");
-if (invokedPath && currentFilePath.endsWith(invokedPath.replace(/^[A-Za-z]:/, ""))) {
+const invokedRaw = process.argv[1]?.replace(/\\/g, "/");
+const stripDrive = (p) => p.replace(/^[A-Za-z]:/, "");
+let isMainEntry = !!invokedRaw && currentFilePath.endsWith(stripDrive(invokedRaw));
+if (!isMainEntry && invokedRaw) {
+  try {
+    const realInvoked = fs.realpathSync(invokedRaw).replace(/\\/g, "/");
+    isMainEntry = currentFilePath.endsWith(stripDrive(realInvoked));
+  } catch { /* ignore: not the main entry */ }
+}
+if (isMainEntry) {
   startDashboardWithFallback();
 }

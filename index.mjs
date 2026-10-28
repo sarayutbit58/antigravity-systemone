@@ -347,7 +347,7 @@ export function extractUserPrompt(args) {
  * @param {string} [rawPrompt=""]
  * @returns {string}
  */
-export function extractModel(args = [], rawPrompt = "") {
+export function extractModel(args = [], rawPrompt = "", customSettingsPath = null) {
   // 1. Check prompt for /model <name> or /mode <name> or /m <name>
   const slashMatch = (rawPrompt || "").match(/^\/(?:model|mode|m)\s+([^\s]+)/i);
   if (slashMatch) return slashMatch[1].toLowerCase();
@@ -361,6 +361,28 @@ export function extractModel(args = [], rawPrompt = "") {
         return args[i + 1].trim().toLowerCase();
       }
     }
+  }
+
+  // 3. Fallback to active model configured in settings.json
+  if (customSettingsPath !== false) {
+    try {
+      const paths = customSettingsPath
+        ? [customSettingsPath]
+        : [
+            path.join(os.homedir(), ".gemini", "antigravity-cli", "settings.json"),
+            path.join(os.homedir(), ".gemini", "settings.json"),
+            path.join(os.homedir(), ".gemini", "antigravity", "settings.json"),
+            path.join(os.homedir(), ".gemini", "antigravity-ide", "settings.json"),
+          ];
+      for (const p of paths) {
+        if (fs.existsSync(p)) {
+          const s = JSON.parse(fs.readFileSync(p, "utf8"));
+          if (s.model && typeof s.model === "string" && s.model.toLowerCase() !== "none") {
+            return s.model.trim();
+          }
+        }
+      }
+    } catch { /* ignore */ }
   }
 
   return "gemini-3-8-flash";
@@ -620,6 +642,47 @@ export function restoreSkillsConfig(skillsJsonPath, originalContent) {
   } catch { /* ignore */ }
 }
 
+// ─── PreInvocation Hook Registration ─────────────────────────────────────────
+export function ensureHookRegistered() {
+  const configDir = path.join(os.homedir(), ".gemini", "config");
+  const hooksPath = path.join(configDir, "hooks.json");
+  const hookScript = fileURLToPath(new URL("./hook.mjs", import.meta.url)).replace(/\\/g, "/");
+
+  let hooks = {};
+  if (fs.existsSync(hooksPath)) {
+    try {
+      hooks = JSON.parse(fs.readFileSync(hooksPath, "utf8"));
+    } catch { hooks = {}; }
+  }
+
+  const desiredCommand = `node "${hookScript}"`;
+  const existing = hooks["agy-smart-router"];
+
+  if (
+    !existing ||
+    !existing.enabled ||
+    !existing.PreInvocation ||
+    !existing.PreInvocation.some((h) => h.command && (h.command === desiredCommand || h.command.includes("hook.mjs")))
+  ) {
+    hooks["agy-smart-router"] = {
+      enabled: true,
+      PreInvocation: [
+        {
+          type: "command",
+          command: desiredCommand,
+          timeout: 5
+        }
+      ]
+    };
+    try {
+      fs.mkdirSync(configDir, { recursive: true });
+      fs.writeFileSync(hooksPath, JSON.stringify(hooks, null, 2), "utf8");
+      return true;
+    } catch { /* ignore */ }
+  }
+  return false;
+}
+
 // ─── CLI entrypoint ─────────────────────────────────────────────────────────
 async function run() {
   const { verbose: flagVerbose, dryRun, dashboard, agyArgs } = parseFlags(process.argv.slice(2));
@@ -630,6 +693,9 @@ async function run() {
     startDashboardWithFallback();
     return;
   }
+
+  // Ensure PreInvocation lifecycle hook is active for interactive sessions
+  ensureHookRegistered();
 
   const cfg = loadConfig();
   const isVerbose = flagVerbose || cfg.verbose;
@@ -670,6 +736,7 @@ async function run() {
       saveTelemetry({
         id: `cli-${Date.now()}`,
         timestamp: Date.now(),
+        stepIndex: 0,
         prompt,
         model: detectedModel,
         effort: effortResult.effort,
@@ -704,6 +771,8 @@ async function run() {
         cleanupHook = () => restoreSkillsConfig(skillsJsonPath, originalContent);
       }
     }
+  } else if (!dryRun) {
+    console.log(`\x1b[36m⚡ [agy-smart] Starting interactive Antigravity session (hook metering active)\x1b[0m`);
   }
 
   if (dryRun) {
@@ -746,7 +815,17 @@ function printProbabilities(probs, threshold) {
 
 // ── Auto-run guard ──
 const currentFilePath = new URL(import.meta.url).pathname;
-const invokedPath = process.argv[1]?.replace(/\\/g, "/");
-if (invokedPath && currentFilePath.endsWith(invokedPath.replace(/^[A-Za-z]:/, ""))) {
+const invokedRaw = process.argv[1]?.replace(/\\/g, "/");
+const stripDrive = (p) => p.replace(/^[A-Za-z]:/, "");
+let isMainEntry = !!invokedRaw && currentFilePath.endsWith(stripDrive(invokedRaw));
+if (!isMainEntry && invokedRaw) {
+  // npm link / symlinked global install: argv[1] is the link path,
+  // import.meta.url is the real path → compare resolved paths too.
+  try {
+    const realInvoked = fs.realpathSync(invokedRaw).replace(/\\/g, "/");
+    isMainEntry = currentFilePath.endsWith(stripDrive(realInvoked));
+  } catch { /* ignore: not the main entry */ }
+}
+if (isMainEntry) {
   run().catch((err) => { console.error("Fatal error:", err); process.exit(1); });
 }

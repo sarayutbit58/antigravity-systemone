@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.3.1] - 2026-10-28
+
+### Added
+- **Automatic Lifecycle Hook Registration (`ensureHookRegistered`)**:
+  - Automatically verifies and registers `agy-smart-router` in `~/.gemini/config/hooks.json` on startup.
+  - Ensures interactive CLI conversations and Antigravity IDE turns are metered and routed without manual hook setup.
+
+### Fixed
+- **Symlinked Entrypoint Auto-Run Guards (`npm link`)**:
+  - Fixed auto-run guards in `hook.mjs` and `dashboard.mjs` using `fs.realpathSync`, resolving silent exits when running through symlinked global paths.
+- **Model Name Accuracy & Settings Inspection**:
+  - Preserved human-readable model names (`Gemini 3.8 Flash (High)`, etc.) in `resolveModelPricing()` rather than forcing generic catalog labels.
+  - Extended model detection in `detectActiveModelRealtime()` and `extractModel()` to inspect user `settings.json` files alongside conversation transcripts.
+- **Test Telemetry Isolation**:
+  - Isolated `test-dashboard.mjs` to a temporary directory to prevent mock test requests from contaminating live telemetry logs.
+- **Skill Badge Spacing in Audit Log**:
+  - Added whitespace separation between skill badges in the dashboard audit log table.
+
+---
+
 ## [1.3.0] - 2026-10-10
 
 ### Added

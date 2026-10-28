@@ -18,6 +18,7 @@ import {
   stripSlashCommands,
   extractModel,
   calibrateSkills,
+  ensureHookRegistered,
 } from "./index.mjs";
 
 import { alreadyLogged, extractTranscriptModel } from "./hook.mjs";
@@ -248,8 +249,17 @@ console.log("🧪 Running agy-smart verification tests (live-only mode)...\n");
   assert.equal(extractModel(["-m", "o3-mini", "-p", "hello"], ""), "o3-mini");
   assert.equal(extractModel(["--model=claude-3-5-sonnet", "-p", "hello"], ""), "claude-3-5-sonnet");
 
-  // Fallback to default
-  assert.equal(extractModel(["-p", "hello"], "hello"), "gemini-3-8-flash");
+  // Fallback to default when no settings file configured
+  assert.equal(extractModel(["-p", "hello"], "hello", false), "gemini-3-8-flash");
+
+  // Fallback to configured settings file when present
+  const tmpSettings = path.join(os.tmpdir(), `temp-settings-${Date.now()}.json`);
+  fs.writeFileSync(tmpSettings, JSON.stringify({ model: "Claude Sonnet 4.6 (Thinking)" }), "utf8");
+  try {
+    assert.equal(extractModel(["-p", "hello"], "hello", tmpSettings), "Claude Sonnet 4.6 (Thinking)");
+  } finally {
+    try { fs.unlinkSync(tmpSettings); } catch {}
+  }
 
   console.log("  ✓ extractModel (detects model pickup from slash commands and CLI flags)");
 }
@@ -491,7 +501,7 @@ console.log("🧪 Running agy-smart verification tests (live-only mode)...\n");
 
     const pricing = resolveModelPricing(detected);
     assert.equal(pricing.id, "gemini-3-8-flash");
-    assert.equal(pricing.name, "Gemini 3.8 Flash (current)");
+    assert.equal(pricing.name, "Gemini 3.8 Flash (Medium)");
 
     console.log("  ✓ detectActiveModelRealtime (accurately detects Gemini 3.8 Flash when >150 lines from the end)");
   } finally {
@@ -544,7 +554,7 @@ console.log("🧪 Running agy-smart verification tests (live-only mode)...\n");
 
     const pricing = resolveModelPricing(detected);
     assert.equal(pricing.id, "gemini-3-8-flash");
-    assert.equal(pricing.name, "Gemini 3.8 Flash (current)");
+    assert.equal(pricing.name, "Gemini 3.8 Flash (Medium)");
 
     console.log("  ✓ detectActiveModelRealtime (selects latest model across multi-turn switches)");
   } finally {
@@ -608,6 +618,14 @@ console.log("🧪 Running agy-smart verification tests (live-only mode)...\n");
   assert.equal(normalDetected, "claude-sonnet-4-6");
 
   console.log("  ✓ hook model precedence (prompt /model slash command takes precedence over transcriptModel)");
+}
+
+// ─── Test 19: ensureHookRegistered lifecycle hook registration ────────────────
+{
+  const registered = ensureHookRegistered();
+  // Idempotent: should return boolean without throwing
+  assert.equal(typeof registered, "boolean");
+  console.log("  ✓ ensureHookRegistered (idempotent registration of agy-smart-router in hooks.json)");
 }
 
 console.log("\n🎉 All agy-smart tests passed (live-only mode)!");

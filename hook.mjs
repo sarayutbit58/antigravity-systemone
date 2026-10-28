@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { scanSkills, queryJevRouter, inferEffortLevel, stripSlashCommands, extractModel, loadConfig, loadEnv } from "./index.mjs";
-import { saveTelemetry, extractModelFromSettings } from "./dashboard.mjs";
+import { saveTelemetry, extractModelFromSettings, detectActiveModelRealtime } from "./dashboard.mjs";
 
 // ponytail: PreInvocation fires on every model invocation (each tool-call cycle),
 // not once per user message. Dedup by checking if recent telemetry already has
@@ -14,7 +14,7 @@ export function alreadyLogged(prompt, stepIndex, telemetryPath = TELEMETRY_PATH)
     const arr = JSON.parse(fs.readFileSync(telemetryPath, "utf8"));
     if (!arr.length) return false;
     if (stepIndex !== undefined && stepIndex >= 0) {
-      return arr.slice(0, 10).some((e) => e.stepIndex === stepIndex && e.prompt === prompt);
+      return arr.slice(0, 10).some((e) => (e.stepIndex === stepIndex || (stepIndex === 0 && e.stepIndex === undefined)) && e.prompt === prompt);
     }
     return arr[0]?.prompt === prompt;
   } catch { return false; }
@@ -108,7 +108,8 @@ async function main() {
         const tokensSaved = (skills.length - result.matchedSkills.length) * 60;
         const hasPromptSlash = /^\s*\/(?:model|mode|m)\s+([^\s]+)/i.test(lastRawPrompt);
         const promptModel = hasPromptSlash ? extractModel([], lastRawPrompt) : "";
-        const detectedModel = promptModel || transcriptModel || data.modelName || "gemini-3-8-flash";
+        const explicitModel = (data.modelName && typeof data.modelName === "string" && data.modelName.toLowerCase() !== "auto") ? data.modelName : "";
+        const detectedModel = promptModel || transcriptModel || explicitModel || detectActiveModelRealtime() || "gemini-3-8-flash";
         saveTelemetry({
           id: `ide-${Date.now()}`,
           timestamp: Date.now(),
@@ -144,7 +145,17 @@ async function main() {
 
 // ponytail: auto-run guard - only read stdin and execute when invoked directly as CLI hook script
 const currentFilePath = new URL(import.meta.url).pathname;
-const invokedPath = process.argv[1]?.replace(/\\/g, "/");
-if (invokedPath && currentFilePath.endsWith(invokedPath.replace(/^[A-Za-z]:/, ""))) {
-  main();
+const invokedRaw = process.argv[1]?.replace(/\\/g, "/");
+const stripDrive = (p) => p.replace(/^[A-Za-z]:/, "");
+let isMainEntry = !!invokedRaw && currentFilePath.endsWith(stripDrive(invokedRaw));
+if (!isMainEntry && invokedRaw) {
+  try {
+    const realInvoked = fs.realpathSync(invokedRaw).replace(/\\/g, "/");
+    isMainEntry = currentFilePath.endsWith(stripDrive(realInvoked));
+  } catch { /* ignore: not the main entry */ }
+}
+if (isMainEntry) {
+  main().catch(() => {
+    process.stdout.write(JSON.stringify({}));
+  });
 }
